@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
+import pyotp
 import robin_stocks.robinhood as rh
 
 import config
@@ -181,14 +182,17 @@ class TradingBot:
             return False
         try:
             log.info("Authenticating with Robinhood...")
-            rh.login(config.RH_USERNAME, config.RH_PASSWORD)
+            mfa_code = None
+            if config.RH_TOTP_SECRET:
+                mfa_code = pyotp.TOTP(config.RH_TOTP_SECRET).now()
+            else:
+                log.warning("RH_TOTP_SECRET not set — headless login will hang on device approval")
+            rh.login(config.RH_USERNAME, config.RH_PASSWORD,
+                     mfa_code=mfa_code, store_session=True)
             try:
-                accounts = rh.get_accounts()
-                agentic = next((a for a in accounts if a.get('name') == 'Agentic'), None)
-                if agentic:
-                    log.info(f"✓ Authenticated — AGENTIC account: {agentic.get('account_number')}")
-                else:
-                    log.warning("⚠️ No Agentic account found. Using default account.")
+                profile = rh.load_account_profile()
+                log.info(f"✓ Authenticated — account {profile.get('account_number')} | "
+                         f"buying power ${float(profile.get('buying_power') or 0):.2f}")
             except Exception:
                 log.info("✓ Authenticated successfully")
             return True
@@ -211,9 +215,15 @@ class TradingBot:
         Raw historicals are stored for volume confirmation and VWAP.
         """
         try:
-            historicals = rh.get_historicals(
-                symbol, interval=config.CANDLE_INTERVAL, span=config.CANDLE_SPAN
-            )
+            if config.IS_CRYPTO(symbol):
+                # 24h of 5-min candles; '24_7' bounds — crypto never sleeps
+                historicals = rh.get_crypto_historicals(
+                    symbol, interval=config.CANDLE_INTERVAL, span='day', bounds='24_7'
+                )
+            else:
+                historicals = rh.get_stock_historicals(
+                    symbol, interval=config.CANDLE_INTERVAL, span=config.CANDLE_SPAN
+                )
             if not historicals:
                 log.warning(f"No historical data for {symbol}")
                 return None, None
@@ -225,18 +235,23 @@ class TradingBot:
 
     def get_current_price(self, symbol: str) -> float:
         try:
-            quote = rh.get_quotes(symbol)
-            if quote and len(quote) > 0:
-                return float(quote[0]['last_trade_price'])
+            if config.IS_CRYPTO(symbol):
+                quote = rh.get_crypto_quote(symbol)
+                if quote and quote.get('mark_price'):
+                    return float(quote['mark_price'])
+            else:
+                quote = rh.get_quotes(symbol)
+                if quote and len(quote) > 0 and quote[0]:
+                    return float(quote[0]['last_trade_price'])
         except Exception as e:
             log.warning(f"Failed to get quote for {symbol}: {e}")
         return None
 
     def scan_for_entries(self):
         """Scan watchlist for entry signals and place buy orders."""
-        # [Opt6] Time gate — block entries outside valid window
-        if not is_valid_entry_time():
-            return
+        # [Opt6] Time gates apply to stocks only — crypto trades 24/7
+        market_open = self.is_market_open()
+        stock_entries_ok = market_open and is_valid_entry_time()
 
         # [Opt1] Log PDT status on every scan
         log.info(f"Day trades used this week: {self.pdt_tracker.day_trades_used()}/3 "
@@ -246,8 +261,13 @@ class TradingBot:
         self.price_histories = {}
         self.raw_historicals = {}
 
+        scan_symbols = [s for s in config.WATCHLIST
+                        if config.IS_CRYPTO(s) or stock_entries_ok]
+        if not scan_symbols:
+            return
+
         with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(self.fetch_price_history, s): s for s in config.WATCHLIST}
+            futures = {executor.submit(self.fetch_price_history, s): s for s in scan_symbols}
             for future in futures:
                 symbol = futures[future]
                 try:
@@ -292,6 +312,8 @@ class TradingBot:
 
             # [Opt4] Volume gate — required before scoring
             vol_ok, vol_ratio = check_volume_confirmation(historicals)
+            if not vol_ok and config.IS_CRYPTO(symbol) and vol_ratio == 0.0:
+                vol_ok = True  # RH crypto candles often report zero volume — gate not applicable
             log.info(f"{symbol} volume ratio: {vol_ratio:.2f}x average")
             if not vol_ok:
                 log.info(f"{symbol} SKIP — volume {vol_ratio:.2f}x < {config.MIN_VOLUME_RATIO}x required")
@@ -361,11 +383,17 @@ class TradingBot:
 
     def manage_exits(self):
         """Check open positions for exit conditions."""
-        # [Opt6] Force close all intraday positions at 3:45pm ET
+        # [Opt6] Force close stock positions at 3:45pm ET — crypto trades on 24/7
         if should_close_all_positions():
-            log.info("3:45pm ET — closing all intraday positions")
-            self.close_all_positions()
-            return
+            stock_syms = [s for s in self.positions if not config.IS_CRYPTO(s)]
+            if stock_syms:
+                log.info("3:45pm ET — closing stock positions (crypto keeps running)")
+                for s in stock_syms:
+                    pos = self.positions.pop(s)
+                    price = self.get_current_price(s) or pos['entry_price']
+                    self.place_sell_order(s, pos['remaining_qty'])
+                    self._record_exit(s, pos, price, pos['remaining_qty'],
+                                      is_win=price > pos['entry_price'])
 
         symbols_to_exit = []
 
@@ -440,11 +468,12 @@ class TradingBot:
             del self.positions[symbol]
 
     def close_all_positions(self):
-        """Force close all open positions (end-of-day or shutdown)."""
+        """Force close all open positions (end-of-session or shutdown)."""
         for symbol, position in list(self.positions.items()):
             current_price = self.get_current_price(symbol) or position['entry_price']
             self.place_sell_order(symbol, position['remaining_qty'])
-            self._record_exit(symbol, position, current_price, position['remaining_qty'], is_win=False)
+            self._record_exit(symbol, position, current_price, position['remaining_qty'],
+                              is_win=current_price > position['entry_price'])
         self.positions.clear()
 
     def place_buy_order(self, symbol: str, dollar_amount: float):
@@ -454,10 +483,17 @@ class TradingBot:
             if config.PAPER_MODE:
                 log.info(f"[PAPER] BUY {quantity:.4f} {symbol} @ ${current_price:.2f} = ${dollar_amount:.2f}")
                 return {'id': f'paper-{int(time.time())}', 'status': 'filled'}
+
+            if config.IS_CRYPTO(symbol):
+                order = rh.order_buy_crypto_by_price(symbol, round(dollar_amount, 2))
             else:
-                log.info(f"[LIVE] Placing market order: {quantity:.4f} {symbol} @ ${current_price:.2f}")
-                # order = rh.order_buy_market(symbol, quantity)
-                return {'id': f'live-{int(time.time())}', 'status': 'pending'}
+                order = rh.order_buy_fractional_by_price(symbol, round(dollar_amount, 2))
+            if order and order.get('id'):
+                log.info(f"✓ [LIVE] BUY {symbol} ${dollar_amount:.2f} @ ~${current_price:.2f} "
+                         f"| order {order['id']}")
+                return order
+            log.error(f"[LIVE] Buy REJECTED for {symbol}: {order}")
+            return None
         except Exception as e:
             log.error(f"Buy order failed for {symbol}: {e}")
             return None
@@ -466,16 +502,26 @@ class TradingBot:
         try:
             if config.PAPER_MODE:
                 log.info(f"[PAPER] SELL {quantity:.4f} {symbol}")
+                return {'id': f'paper-{int(time.time())}', 'status': 'filled'}
+
+            if config.IS_CRYPTO(symbol):
+                order = rh.order_sell_crypto_by_quantity(symbol, round(quantity, 8))
             else:
-                log.info(f"[LIVE] Placing sell order for {quantity:.4f} {symbol}...")
+                order = rh.order_sell_fractional_by_quantity(symbol, round(quantity, 6))
+            if order and order.get('id'):
+                log.info(f"✓ [LIVE] SELL {quantity:.6f} {symbol} | order {order['id']}")
+                return order
+            log.error(f"[LIVE] Sell REJECTED for {symbol}: {order} — POSITION MAY STILL BE OPEN")
+            return None
         except Exception as e:
             log.error(f"Sell order failed for {symbol}: {e}")
+            return None
 
     def get_current_portfolio_value(self) -> float:
         try:
-            account = rh.get_account()
-            if account:
-                return float(account.get('portfolio_value', config.PORTFOLIO_SIZE))
+            portfolio = rh.load_portfolio_profile()
+            if portfolio and portfolio.get('equity'):
+                return float(portfolio['equity'])
         except Exception as e:
             log.warning(f"Could not fetch portfolio value: {e}")
         portfolio_value = config.PORTFOLIO_SIZE
@@ -487,8 +533,8 @@ class TradingBot:
 
     def check_buying_power(self, position_dollars: float) -> bool:
         try:
-            account = rh.get_account()
-            buying_power = float(account.get('buying_power', 0))
+            account = rh.load_account_profile()
+            buying_power = float(account.get('buying_power') or 0)
             if position_dollars > buying_power:
                 log.warning(f"Insufficient buying power: ${buying_power:.2f} < ${position_dollars:.2f}")
                 return False
@@ -512,39 +558,35 @@ class TradingBot:
             return
 
         self.is_active = True
+        session_end = time.time() + config.MAX_SESSION_SECONDS
         log.info(f"🤖 Bot started in {'PAPER' if config.PAPER_MODE else 'LIVE'} mode")
         log.info(f"Portfolio: ${config.PORTFOLIO_SIZE} | Max positions: {config.MAX_POSITIONS} | "
                  f"Watchlist: {', '.join(config.WATCHLIST)}")
-
-        last_report_date = None
+        log.info(f"Session window: {config.MAX_SESSION_SECONDS/3600:.1f}h — "
+                 f"all positions close at window end (crypto 24/7, stocks market hours)")
 
         try:
             while self.is_active:
-                if not self.is_market_open():
-                    log.debug("Market closed; sleeping...")
-                    time.sleep(config.SCAN_INTERVAL_SECONDS)
-                    continue
-
-                # [Opt7] Daily risk gate — halt entries if loss limits hit
-                current_value = self.get_current_portfolio_value()
-                if self.daily_risk_gate.should_halt(current_value):
-                    log.warning("Daily risk gate triggered — no new entries until tomorrow")
-                    time.sleep(config.SCAN_INTERVAL_SECONDS)
-                    continue
-
-                # [Opt8] Daily report — fires once after FORCE_CLOSE_TIME, then exits
-                today = datetime.now(ET).date()
-                if get_et_time() >= config.FORCE_CLOSE_TIME and last_report_date != today:
-                    if self.positions:
-                        self.close_all_positions()
-                    generate_daily_report(config.PORTFOLIO_SIZE, current_value,
+                # Session window end — close everything, report, exit clean
+                if time.time() >= session_end:
+                    log.info("Session window ending — closing all positions")
+                    self.close_all_positions()
+                    generate_daily_report(config.PORTFOLIO_SIZE,
+                                          self.get_current_portfolio_value(),
                                           self.trade_log, self.pdt_tracker)
-                    last_report_date = today
-                    log.info("Day complete — shutting down.")
+                    log.info("Session complete — shutting down.")
                     break
 
+                # [Opt7] Daily risk gate — halt NEW entries if loss limits hit,
+                # but keep managing exits so open positions are never stranded
+                current_value = self.get_current_portfolio_value()
+                halted = self.daily_risk_gate.should_halt(current_value)
+                if halted:
+                    log.warning("Daily risk gate triggered — no new entries this session")
+
                 try:
-                    self.scan_for_entries()
+                    if not halted:
+                        self.scan_for_entries()
                     self.manage_exits()
                     self.print_stats()
                 except Exception as e:

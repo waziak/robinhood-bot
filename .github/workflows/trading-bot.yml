@@ -2,22 +2,30 @@ name: Robinhood Trading Bot
 
 on:
   schedule:
-    # 9:30 AM ET (EDT/UTC-4) Mon–Fri
-    # NOTE: When clocks fall back (Nov), update to '30 14 * * 1-5' for EST/UTC-5
-    - cron: '30 13 * * 1-5'
+    # 4 sessions/day, ~5.5h each — near-24/7 crypto coverage.
+    # The 12:35 UTC session covers US market open (13:30 UTC / 9:30 ET),
+    # the 18:35 session covers the close.
+    - cron: '35 0 * * *'
+    - cron: '35 6 * * *'
+    - cron: '35 12 * * *'
+    - cron: '35 18 * * *'
   workflow_dispatch:  # manual trigger for testing
+
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
 
 jobs:
   trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 355  # hard cap under GitHub's 6h limit; bot exits cleanly at 3:20 PM ET
+    timeout-minutes: 350  # hard cap under GitHub's 6h wall; bot self-exits at 5.5h
 
     env:
       RH_USERNAME: ${{ secrets.RH_USERNAME }}
       RH_PASSWORD: ${{ secrets.RH_PASSWORD }}
+      RH_TOTP_SECRET: ${{ secrets.RH_TOTP_SECRET }}
       PAPER_MODE: ${{ secrets.PAPER_MODE }}
-      FORCE_CLOSE_HOUR: '15'
-      FORCE_CLOSE_MINUTE: '20'  # 3:20 PM ET — bot exits before GitHub's 6h wall
+      MAX_SESSION_SECONDS: '19800'  # 5.5h — leaves 20min buffer before timeout kill
 
     steps:
       - uses: actions/checkout@v4

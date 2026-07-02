@@ -1,0 +1,187 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║           ROBINHOOD BOT v2 — QUICK START GUIDE                            ║
+║           Multi-Indicator Trading with Riskfolio-Lib Position Sizing       ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+📍 LOCATION: /Users/akselkukkonen/robinhood-bot/
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 SETUP (5 minutes)
+
+1. Create virtual environment (avoids disk space issues):
+   cd /Users/akselkukkonen/robinhood-bot
+   python3 -m venv venv
+   source venv/bin/activate
+
+2. Install dependencies:
+   pip install -r requirements.txt
+
+3. Add credentials to .env:
+   nano .env
+   # Fill in: RH_USERNAME, RH_PASSWORD
+   # Keep PAPER_MODE=true for testing
+
+4. Run bot:
+   python bot.py
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 WHAT THE BOT DOES
+
+Entry: Scores each stock on 4 signals (SMA trend, RSI, MACD, pullback)
+       → Triggers on 3-of-4 signals (medium-risk balance)
+
+Position Sizing: Uses HRP (Hierarchical Risk Parity) to allocate capital
+                 → Avoids sector concentration
+                 → Weights based on volatility & correlation
+
+Exits: Profit target (+4%), Hard stop (-2%), Trailing stop (-1.5% after +2%)
+
+Risk Gate: Halts new entries if portfolio down >8%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📈 ENTRY SIGNAL BREAKDOWN (all 4 possible)
+
+1. SMA Trend      → SMA20 > SMA50 (5-min candles)
+2. RSI Zone       → RSI(14) between 40–58 (momentum confirmation)
+3. MACD Cross     → MACD above signal line (bullish)
+4. Pullback       → Price within ±2% of SMA20 (support entry)
+
+Example entry log:
+  AAPL @ $192.50 | score=3/4 | SMA20(191.80) > SMA50(189.50) | 
+                              RSI=42.3 (in zone) | Pullback to SMA20 (-0.21%)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 SAMPLE OUTPUT
+
+[2026-06-18 09:30:15] [INFO] 🤖 Bot started in PAPER mode
+[2026-06-18 09:30:16] [INFO] Scanning for entries...
+[2026-06-18 09:30:17] [INFO] HRP weights: AAPL=0.125 MSFT=0.156 ...
+[2026-06-18 09:30:17] [INFO] AAPL @ $192.50 | score=3/4 | SMA20(191.80) > SMA50(189.50) | RSI=42.3 (in zone) | Pullback to SMA20 (-0.21%)
+[2026-06-18 09:30:17] [INFO] ✓ [ENTRY] AAPL: 0.0778 shares @ $192.50 | stop=-2.00%
+[2026-06-18 09:31:17] [INFO] ✓ [PROFIT TARGET] AAPL @ $200.10 (+4.16%)
+[2026-06-18 09:31:17] [STATS] Trades: 1 | Wins: 1 (100.0%) | Profit: $6.18 (6.18% ROI) | Open: 0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ TESTING (Already Done!)
+
+Test Mode (No Dependencies):
+  python test_bot.py  # Shows strategy logic with synthetic data
+
+Results:
+  ✓ Entry scoring logic verified (3-of-4 signals working)
+  ✓ Position sizing calculated correctly
+  ✓ Exit logic working (profit target, stop loss, trailing stop)
+  ✓ Multiple market conditions tested
+  ✓ Code syntax verified
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔄 PAPER → LIVE WORKFLOW
+
+Day 1: Paper Trading (PAPER_MODE=true)
+  - Monitor entry score logs
+  - Verify HRP weights log
+  - Watch entries/exits
+  - Check win rate (target >50%)
+  - Monitor drawdown (target <8%)
+
+Day 2+: Confident? Switch to Live
+  - Edit .env: PAPER_MODE=false
+  - Restart bot
+  - Monitor real money execution
+  - Start with 1 position max for first day
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚙️  CUSTOMIZATION
+
+Edit config.py to adjust:
+
+Watchlist:
+  WATCHLIST = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'SPY', 'QQQ', 'NVDA']
+
+Entry Thresholds:
+  MIN_ENTRY_SCORE = 3        # require 3-of-4 signals (0-4 scale)
+  RSI_MIN = 40               # don't enter below this RSI
+  RSI_MAX = 58               # don't enter above this RSI
+  PULLBACK_PCT = 0.02        # ±2% from SMA20
+
+Exit Levels:
+  PROFIT_TARGET_PCT = 0.04   # exit on +4%
+  STOP_LOSS_PCT = -0.02      # exit on -2%
+  TRAILING_STOP_PCT = -0.015 # exit on -1.5% from peak
+
+Risk Management:
+  MAX_POSITIONS = 5          # max 5 concurrent positions
+  MAX_POSITION_PCT = 0.25    # max 25% per position
+  MAX_PORTFOLIO_DRAWDOWN = -0.08  # halt entries if down 8%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 DOCUMENTATION
+
+README.md              — Full user guide
+IMPLEMENTATION_NOTES  — Design decisions & tech deep dive
+TEST_RESULTS.md       — What we tested & why it works
+DEPLOYMENT.md         — Installation & troubleshooting
+QUICKSTART.txt        — This file
+
+Code:
+  bot.py       — Main trading loop (480 lines)
+  config.py    — All constants (50 lines)
+  indicators.py — RSI, MACD, SMA (150 lines)
+  risk.py      — Riskfolio-Lib wrapper (130 lines)
+  test_bot.py  — Self-contained test (no deps) (280 lines)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 KEY FEATURES
+
+✓ Multi-Indicator Scoring (RSI + MACD + SMA + Pullback)
+✓ Riskfolio-Lib Integration (HRP position sizing, CVaR stops)
+✓ Paper Trading Mode (test before live)
+✓ Market Hours Check (9:30–16:00 ET, Mon–Fri only)
+✓ Portfolio Drawdown Gate (halt entries if down >8%)
+✓ Dynamic Stop Loss (tighter for volatile stocks)
+✓ Trailing Stop (avoids whipsaw, lets winners run)
+✓ Parallel Price Fetching (ThreadPoolExecutor, fast)
+✓ Comprehensive Logging (trace every decision)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❓ TROUBLESHOOTING
+
+No space for pip install?
+  → Use virtual environment: python3 -m venv venv
+
+Bot won't authenticate?
+  → Check .env has RH_USERNAME and RH_PASSWORD
+  → If MFA enabled, look for "Please enter MFA code" prompt
+
+No entries ever fire?
+  → Check entry score logs (all 8 symbols log scores 0–4)
+  → Try lowering MIN_ENTRY_SCORE to 1 to force test
+  → Verify running during market hours (9:30–16:00 ET, Mon–Fri)
+
+All symbols score 0/4?
+  → Market is weak (no uptrends)
+  → Adjust RSI_MIN/RSI_MAX in config.py if too strict
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✨ READY TO TRADE!
+
+Next steps:
+  1. source venv/bin/activate (if using venv)
+  2. pip install -r requirements.txt
+  3. Edit .env with real credentials
+  4. python bot.py
+  5. Watch logs for 1+ trading day in paper mode
+  6. Switch PAPER_MODE=false when confident
+
+═══════════════════════════════════════════════════════════════════════════════

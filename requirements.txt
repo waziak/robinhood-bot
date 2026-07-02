@@ -3,3 +3,5 @@ riskfolio-lib>=0.3.0
 pandas>=1.5.0
 numpy>=1.23.0
 python-dotenv>=0.20.0
+pyotp>=2.8.0
+pytz>=2023.3

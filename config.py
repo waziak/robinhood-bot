@@ -81,6 +81,10 @@ PAPER_MODE = os.getenv('PAPER_MODE', 'true').lower() != 'false'
 
 RH_USERNAME = os.getenv('RH_USERNAME')
 RH_PASSWORD = os.getenv('RH_PASSWORD')
+RH_TOTP_SECRET = os.getenv('RH_TOTP_SECRET')  # authenticator-app 2FA secret — required for headless CI login
+
+# Session window — bot closes everything and exits after this long (CI runners cap jobs at 6h)
+MAX_SESSION_SECONDS = int(os.getenv('MAX_SESSION_SECONDS', str(int(5.5 * 3600))))
 
 CVaR_ALPHA = 0.05
 DYNAMIC_STOP_SCALAR = 1.5
