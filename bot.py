@@ -528,6 +528,8 @@ class TradingBot:
         return portfolio_value
 
     def check_buying_power(self, position_dollars: float) -> bool:
+        if config.PAPER_MODE:
+            return True  # paper trades simulate against config.PORTFOLIO_SIZE, not the real account's cash
         try:
             account = rh.load_account_profile()
             buying_power = float(account.get('buying_power') or 0)
