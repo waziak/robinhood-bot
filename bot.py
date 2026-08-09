@@ -12,10 +12,10 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
-import pyotp
 import robin_stocks.robinhood as rh
 
 import config
+import session_auth
 from indicators import score_entry, check_volume_confirmation
 from risk import calculate_hrp_weights, calculate_position_size, calculate_dynamic_stop, portfolio_drawdown_check
 
@@ -182,19 +182,15 @@ class TradingBot:
             return False
         try:
             log.info("Authenticating with Robinhood...")
-            mfa_code = None
-            if config.RH_TOTP_SECRET:
-                mfa_code = pyotp.TOTP(config.RH_TOTP_SECRET).now()
-            else:
-                log.warning("RH_TOTP_SECRET not set — headless login will hang on device approval")
-            rh.login(config.RH_USERNAME, config.RH_PASSWORD,
-                     mfa_code=mfa_code, store_session=True)
+            if not session_auth.authenticate(config.RH_USERNAME, config.RH_PASSWORD):
+                log.error("Authentication failed — see warnings above")
+                return False
             try:
                 profile = rh.load_account_profile()
                 log.info(f"✓ Authenticated — account {profile.get('account_number')} | "
                          f"buying power ${float(profile.get('buying_power') or 0):.2f}")
             except Exception:
-                log.info("✓ Authenticated successfully")
+                pass
             return True
         except Exception as e:
             log.error(f"Authentication failed: {e}")

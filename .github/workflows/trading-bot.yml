@@ -23,7 +23,6 @@ jobs:
     env:
       RH_USERNAME: ${{ secrets.RH_USERNAME }}
       RH_PASSWORD: ${{ secrets.RH_PASSWORD }}
-      RH_TOTP_SECRET: ${{ secrets.RH_TOTP_SECRET }}
       PAPER_MODE: ${{ secrets.PAPER_MODE }}
       MAX_SESSION_SECONDS: '19800'  # 5.5h — leaves 20min buffer before timeout kill
 
@@ -38,5 +37,44 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Robinhood no longer offers TOTP 2FA — the only unattended-login option
+      # is a device-approval push, which needs a human tap. Every CI run is a
+      # fresh machine that looks like a new device, so a cold `rh.login()` would
+      # hang on that push every single run. Instead we persist the session
+      # (access + refresh token) across runs via cache, keyed so the newest one
+      # always wins on restore. See session_auth.py for the resume/refresh logic.
+      - name: Restore Robinhood session
+        id: restore_session
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.tokens/robinhood.pickle
+          key: rh-session-${{ github.run_id }}
+          restore-keys: |
+            rh-session-
+
+      # Only needed once, ever — bootstraps the very first session from a
+      # one-time manual login (see scripts/bootstrap_session.py). Once the
+      # cache above has a real session saved, this secret is never touched again.
+      - name: Seed session from secret (first run only)
+        if: steps.restore_session.outputs.cache-matched-key == ''
+        run: |
+          mkdir -p ~/.tokens
+          if [ -n "${{ secrets.RH_SESSION_SEED_B64 }}" ]; then
+            echo "${{ secrets.RH_SESSION_SEED_B64 }}" | base64 -d > ~/.tokens/robinhood.pickle
+            echo "Seeded session from RH_SESSION_SEED_B64"
+          else
+            echo "No cached session and no RH_SESSION_SEED_B64 secret — this run will need a fresh device-approval login"
+          fi
+
       - name: Run trading bot
         run: python bot.py
+
+      # Persist whatever session ended up valid (resumed, refreshed, or freshly
+      # logged in) so the next scheduled run can skip login entirely.
+      - name: Save Robinhood session
+        if: always()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ~/.tokens/robinhood.pickle
+          key: rh-session-${{ github.run_id }}
