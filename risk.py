@@ -88,7 +88,7 @@ def calculate_dynamic_stop(symbol: str, price_history: pd.Series, base_stop: flo
         adjusted_stop = base_stop + (cvar * DYNAMIC_STOP_SCALAR)
 
         # But don't make it too tight; minimum is -1%
-        return max(adjusted_stop, -0.01)
+        return min(adjusted_stop, -0.01)
 
     except Exception as e:
         print(f"[WARN] Dynamic stop calculation failed: {e}; using base stop")
