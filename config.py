@@ -25,6 +25,13 @@ SYMBOL_VOLATILITY = {
 }
 
 # Account
+# "Agentic" cash account — the one actually funded for this bot (agentic_allowed=true).
+# robin_stocks defaults to the login's default account (a different, margin account) unless
+# told otherwise, so every account-scoped call must pass this explicitly. Stock/fractional
+# order and profile calls accept account_number; crypto order calls in robin_stocks do NOT
+# (no per-order account param exists), so crypto always executes against the login's default
+# account regardless of this setting.
+ACCOUNT_NUMBER = os.getenv('RH_ACCOUNT_NUMBER', '554664508')
 PORTFOLIO_SIZE = 50.00
 MAX_POSITIONS = 5
 MAX_POSITION_PCT = 0.25

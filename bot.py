@@ -186,7 +186,7 @@ class TradingBot:
                 log.error("Authentication failed — see warnings above")
                 return False
             try:
-                profile = rh.load_account_profile()
+                profile = rh.load_account_profile(account_number=config.ACCOUNT_NUMBER)
                 log.info(f"✓ Authenticated — account {profile.get('account_number')} | "
                          f"buying power ${float(profile.get('buying_power') or 0):.2f}")
             except Exception:
@@ -481,9 +481,12 @@ class TradingBot:
                 return {'id': f'paper-{int(time.time())}', 'status': 'filled'}
 
             if config.IS_CRYPTO(symbol):
+                # robin_stocks crypto orders have no account_number param — always executes
+                # against the login's default account, not config.ACCOUNT_NUMBER.
                 order = rh.order_buy_crypto_by_price(symbol, round(dollar_amount, 2))
             else:
-                order = rh.order_buy_fractional_by_price(symbol, round(dollar_amount, 2))
+                order = rh.order_buy_fractional_by_price(
+                    symbol, round(dollar_amount, 2), account_number=config.ACCOUNT_NUMBER)
             if order and order.get('id'):
                 log.info(f"✓ [LIVE] BUY {symbol} ${dollar_amount:.2f} @ ~${current_price:.2f} "
                          f"| order {order['id']}")
@@ -503,7 +506,8 @@ class TradingBot:
             if config.IS_CRYPTO(symbol):
                 order = rh.order_sell_crypto_by_quantity(symbol, round(quantity, 8))
             else:
-                order = rh.order_sell_fractional_by_quantity(symbol, round(quantity, 6))
+                order = rh.order_sell_fractional_by_quantity(
+                    symbol, round(quantity, 6), account_number=config.ACCOUNT_NUMBER)
             if order and order.get('id'):
                 log.info(f"✓ [LIVE] SELL {quantity:.6f} {symbol} | order {order['id']}")
                 return order
@@ -515,7 +519,7 @@ class TradingBot:
 
     def get_current_portfolio_value(self) -> float:
         try:
-            portfolio = rh.load_portfolio_profile()
+            portfolio = rh.load_portfolio_profile(account_number=config.ACCOUNT_NUMBER)
             if portfolio and portfolio.get('equity'):
                 return float(portfolio['equity'])
         except Exception as e:
@@ -531,7 +535,7 @@ class TradingBot:
         if config.PAPER_MODE:
             return True  # paper trades simulate against config.PORTFOLIO_SIZE, not the real account's cash
         try:
-            account = rh.load_account_profile()
+            account = rh.load_account_profile(account_number=config.ACCOUNT_NUMBER)
             buying_power = float(account.get('buying_power') or 0)
             if position_dollars > buying_power:
                 log.warning(f"Insufficient buying power: ${buying_power:.2f} < ${position_dollars:.2f}")
