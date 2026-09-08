@@ -40,6 +40,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # TimesFM's checkpoint (~800MB) is immutable for a given model id, so a
+      # stable key means: download once, hit cache on every run after. Avoids
+      # re-pulling 800MB x 4 sessions/day forever. Safe to fail open — forecast.py
+      # just disables the forecast signal for the session if the weights aren't
+      # there (e.g. this is the very first run before anything's cached).
+      - name: Restore TimesFM checkpoint cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-timesfm-2.5-200m-pytorch
+
       # Robinhood no longer offers TOTP 2FA — the only unattended-login option
       # is a device-approval push, which needs a human tap. Every CI run is a
       # fresh machine that looks like a new device, so a cold `rh.login()` would
@@ -71,6 +82,14 @@ jobs:
 
       - name: Run trading bot
         run: python bot.py
+
+      - name: Save TimesFM checkpoint cache
+        if: always()
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/huggingface
+          key: hf-timesfm-2.5-200m-pytorch
 
       # PAPER_MODE has no broker ledger, so bot.py persists its simulated equity
       # to state.json each session (see state.py). Commit it back so the next

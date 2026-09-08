@@ -17,6 +17,7 @@ import robin_stocks.robinhood as rh
 import config
 import session_auth
 import state
+import forecast
 from indicators import score_entry, check_volume_confirmation
 from risk import calculate_hrp_weights, calculate_position_size, calculate_dynamic_stop, portfolio_drawdown_check
 
@@ -288,6 +289,10 @@ class TradingBot:
         hrp_weights = calculate_hrp_weights({s: h.values for s, h in self.price_histories.items()})
         log.info(f"HRP weights: {', '.join(f'{s}={w:.3f}' for s, w in sorted(hrp_weights.items()))}")
 
+        # [TimesFM] One batched forecast call for the whole watchlist per scan
+        # cycle — see forecast.py. Missing entries mean "no opinion", not bearish.
+        forecast_bullish = forecast.forecast_direction(self.price_histories)
+
         current_portfolio_value = self.get_current_portfolio_value()
         # [Opt7] Use updated 6% drawdown gate instead of old 8%
         if not portfolio_drawdown_check(self.initial_portfolio_value,
@@ -333,6 +338,14 @@ class TradingBot:
                      f"| {' | '.join(entry_score['reasons'])}")
 
             if entry_score['score'] < config.MIN_ENTRY_SCORE:
+                continue
+
+            # [TimesFM] Veto only — a bearish forecast blocks an otherwise-good
+            # entry, but no opinion (model disabled/unavailable/insufficient
+            # history) never blocks one.
+            if symbol in forecast_bullish and not forecast_bullish[symbol]:
+                log.info(f"{symbol} SKIP — TimesFM forecasts lower prices over "
+                         f"the next {config.FORECAST_HORIZON} bars")
                 continue
 
             weight = hrp_weights.get(symbol, 1.0 / len(config.WATCHLIST))

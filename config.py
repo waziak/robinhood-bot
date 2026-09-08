@@ -94,3 +94,9 @@ MAX_SESSION_SECONDS = int(os.getenv('MAX_SESSION_SECONDS', str(int(5.5 * 3600)))
 
 CVaR_ALPHA = 0.05
 DYNAMIC_STOP_SCALAR = 1.5
+
+# TimesFM forecast filter — see forecast.py. Off switch for when the dependency
+# is missing/broken on a runner; the strategy still works fine without it.
+ENABLE_FORECAST = os.getenv('ENABLE_FORECAST', 'true').lower() != 'false'
+FORECAST_MAX_CONTEXT = 512   # Tier-1 CPU sizing per TimesFM's own guidance
+FORECAST_HORIZON = 12        # 12 x 5-min candles = 1 hour ahead
