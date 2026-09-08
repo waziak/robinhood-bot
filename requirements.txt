@@ -1,5 +1,14 @@
 robin_stocks>=3.2.0
-riskfolio-lib>=0.3.0
+# Pinned exact, not >=0.3.0: that unpinned floor let pip silently resolve to
+# 7.3.0, whose HCPortfolio.optimization() had renamed both the method= kwarg
+# (-> model=) and the weights column (Allocation -> weights) vs. what risk.py
+# called — every HRP calculation threw, was swallowed, and silently fell back
+# to equal-weight sizing indefinitely (see risk.py). Pin exactly so a future
+# `pip install` can't quietly reintroduce the same class of drift; bump this
+# deliberately, verifying risk.py's optimization() call against the new
+# version's actual signature first (inspect.signature is enough — that's how
+# both renames above were caught) rather than just relaxing the constraint.
+riskfolio-lib==7.3.0
 pandas>=1.5.0
 numpy>=1.23.0
 python-dotenv>=0.20.0

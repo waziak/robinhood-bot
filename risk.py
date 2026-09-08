@@ -10,6 +10,50 @@ except ImportError:
     print("[WARN] riskfolio-lib not installed; using uniform weighting fallback")
 
 
+def _cap_and_normalize(weights: dict, cap: float) -> dict:
+    """
+    Normalize to sum to 1.0 while keeping every weight at or under `cap`.
+
+    A single clip-then-renormalize pass isn't enough: clipping the biggest
+    weight down to `cap` and then renormalizing everything to sum back to 1.0
+    can push that same weight right back over the cap (redistributing a large
+    clipped-off excess across a couple of tiny remaining weights inflates them
+    disproportionately, including the one that was just capped). This
+    iterates instead — cap whatever's currently over, redistribute only the
+    excess among what's left, repeat — which converges because each pass
+    permanently locks at least one more weight at the cap.
+
+    If there are too few weights for the cap to be satisfiable at all (e.g.
+    cap=0.25 with only 2 symbols: 2 x 0.25 = 0.5 can never reach 1.0), falls
+    back to equal weight among them — the same fallback already used
+    everywhere else in this module for a case with no principled answer.
+    """
+    n = len(weights)
+    if n == 0:
+        return {}
+    if cap * n < 1.0:
+        return {k: 1.0 / n for k in weights}
+
+    total = sum(weights.values())
+    if total <= 0:
+        return {k: 1.0 / n for k in weights}
+    remaining = {k: v / total for k, v in weights.items()}  # normalize to 1.0 first
+    fixed = {}
+
+    while True:
+        over_cap = [k for k, v in remaining.items() if v > cap]
+        if not over_cap:
+            break
+        for k in over_cap:
+            fixed[k] = cap
+            del remaining[k]
+        free_total = sum(remaining.values())
+        budget_left = 1.0 - sum(fixed.values())
+        remaining = {k: v / free_total * budget_left for k, v in remaining.items()}
+
+    return {**fixed, **remaining}
+
+
 def calculate_hrp_weights(price_histories: dict) -> dict:
     """
     Calculate Hierarchical Risk Parity weights for watchlist symbols.
@@ -30,25 +74,22 @@ def calculate_hrp_weights(price_histories: dict) -> dict:
             n = len(price_histories)
             return {symbol: 1.0 / n for symbol in price_histories.keys()}
 
-        # HRP calculation
+        # HRP calculation. optimization()'s kwarg was renamed method -> model, and
+        # its single weights column was renamed Allocation -> weights at some point
+        # after this was last touched (riskfolio-lib>=0.3.0 was unpinned, so a pip
+        # install could resolve to any version) — the old names raised/KeyError'd
+        # on every call, silently falling back to equal weight forever without
+        # anyone noticing beyond a per-cycle log line. Reading the column
+        # positionally instead of by name survives another such rename.
         portfolio = rp.HCPortfolio(returns=returns)
-        weights = portfolio.optimization(method='HRP', codependence='pearson', rm='MV')
+        weights = portfolio.optimization(model='HRP', codependence='pearson', rm='MV')
+        weight_col = weights.iloc[:, 0]
 
-        # Convert to dict, clip to MAX_POSITION_PCT
-        weight_dict = {}
-        for symbol in price_histories.keys():
-            w = weights.loc[symbol, 'Allocation'] if symbol in weights.index else 0
-            weight_dict[symbol] = min(w, MAX_POSITION_PCT)
-
-        # Renormalize to sum to 1.0
-        total = sum(weight_dict.values())
-        if total > 0:
-            weight_dict = {k: v / total for k, v in weight_dict.items()}
-        else:
-            n = len(price_histories)
-            weight_dict = {symbol: 1.0 / n for symbol in price_histories.keys()}
-
-        return weight_dict
+        raw_weights = {
+            symbol: weight_col.loc[symbol] if symbol in weight_col.index else 0
+            for symbol in price_histories.keys()
+        }
+        return _cap_and_normalize(raw_weights, MAX_POSITION_PCT)
 
     except Exception as e:
         print(f"[WARN] HRP calculation failed: {e}; using equal weight")
