@@ -5,13 +5,16 @@ $50 account — PDT-compliant, 3-of-5 scoring, runner exits, VWAP + volume gate.
 """
 
 import time
+import signal
 import logging
 import traceback
 import pytz
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
+import requests
 import robin_stocks.robinhood as rh
 
 import config
@@ -29,6 +32,59 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 ET = pytz.timezone('America/New_York')  # [Opt6]
+
+
+# ─── API call timeouts ────────────────────────────────────────────────────────
+# robin_stocks calls have no built-in timeout, so a single hung HTTP request
+# can otherwise wedge the whole session indefinitely — an open position with
+# no exits if it happens in LIVE mode. signal.alarm only fires in the main
+# thread, which covers every robin_stocks call in this file EXCEPT the ones in
+# fetch_price_history(): scan_for_entries() runs that inside a
+# ThreadPoolExecutor worker thread, where signal.signal() would raise
+# "signal only works in main thread of the main interpreter". That path is
+# timed out at future.result() instead, further down.
+
+@contextmanager
+def timeout(seconds, error_message="API call timed out"):
+    def handler(signum, frame):
+        raise TimeoutError(error_message)
+
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+
+
+def safe_api_call(func, *args, timeout_secs=10, **kwargs):
+    """Call a robin_stocks function with a hard timeout. Returns None on a
+    timeout or any other error instead of raising — every call site in this
+    file already null-checks robin_stocks' return values."""
+    try:
+        with timeout(timeout_secs, f"{func.__name__} timed out after {timeout_secs}s"):
+            return func(*args, **kwargs)
+    except TimeoutError:
+        log.error(f"API timeout on {func.__name__} after {timeout_secs}s")
+        return None
+    except Exception as e:
+        log.warning(f"API error on {func.__name__}: {e}")
+        return None
+
+
+def send_telegram_alert(message: str):
+    """Best-effort only — no Telegram creds configured means this is a no-op,
+    not a failure. Never let alerting itself become another way to hang."""
+    if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": config.TELEGRAM_CHAT_ID, "text": message},
+            timeout=5,
+        )
+    except Exception as e:
+        log.warning(f"Telegram alert failed: {e}")
 
 
 # ─── [Opt1] PDT tracker ──────────────────────────────────────────────────────
@@ -193,12 +249,11 @@ class TradingBot:
             if not session_auth.authenticate(config.RH_USERNAME, config.RH_PASSWORD):
                 log.error("Authentication failed — see warnings above")
                 return False
-            try:
-                profile = rh.load_account_profile(account_number=config.ACCOUNT_NUMBER)
+            profile = safe_api_call(rh.load_account_profile, account_number=config.ACCOUNT_NUMBER,
+                                     timeout_secs=config.API_TIMEOUT_PROFILE)
+            if profile:
                 log.info(f"✓ Authenticated — account {profile.get('account_number')} | "
                          f"buying power ${float(profile.get('buying_power') or 0):.2f}")
-            except Exception:
-                pass
             return True
         except Exception as e:
             log.error(f"Authentication failed: {e}")
@@ -238,17 +293,16 @@ class TradingBot:
             return None, None
 
     def get_current_price(self, symbol: str) -> float:
-        try:
-            if config.IS_CRYPTO(symbol):
-                quote = rh.get_crypto_quote(symbol)
-                if quote and quote.get('mark_price'):
-                    return float(quote['mark_price'])
-            else:
-                quote = rh.get_quotes(symbol)
-                if quote and len(quote) > 0 and quote[0]:
-                    return float(quote[0]['last_trade_price'])
-        except Exception as e:
-            log.warning(f"Failed to get quote for {symbol}: {e}")
+        # Always called from the main thread (scan/exit loops), so safe_api_call's
+        # signal-based timeout applies cleanly here.
+        if config.IS_CRYPTO(symbol):
+            quote = safe_api_call(rh.get_crypto_quote, symbol, timeout_secs=config.API_TIMEOUT_QUOTE)
+            if quote and quote.get('mark_price'):
+                return float(quote['mark_price'])
+        else:
+            quote = safe_api_call(rh.get_quotes, symbol, timeout_secs=config.API_TIMEOUT_QUOTE)
+            if quote and len(quote) > 0 and quote[0]:
+                return float(quote[0]['last_trade_price'])
         return None
 
     def scan_for_entries(self):
@@ -270,17 +324,31 @@ class TradingBot:
         if not scan_symbols:
             return
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        # fetch_price_history() runs rh.get_stock_historicals/get_crypto_historicals
+        # inside these worker threads, where signal-based safe_api_call can't be
+        # used (SIGALRM only fires in the main thread) — so the timeout is
+        # enforced here instead, at future.result(), which does work across
+        # threads. A future that times out leaves its thread running in the
+        # background (Python can't force-kill a thread), which is why this uses
+        # shutdown(wait=False) below instead of the `with` form — otherwise exiting
+        # the executor would itself block on that same hung thread.
+        executor = ThreadPoolExecutor(max_workers=4)
+        try:
             futures = {executor.submit(self.fetch_price_history, s): s for s in scan_symbols}
             for future in futures:
                 symbol = futures[future]
                 try:
-                    series, historicals = future.result()
+                    series, historicals = future.result(timeout=config.API_TIMEOUT_HISTORICALS)
                     if series is not None and len(series) >= config.MIN_CANDLES:
                         self.price_histories[symbol] = series
                         self.raw_historicals[symbol] = historicals
+                except TimeoutError:
+                    log.warning(f"API timeout fetching {symbol} historicals "
+                                f"after {config.API_TIMEOUT_HISTORICALS}s")
                 except Exception as e:
                     log.warning(f"Error fetching {symbol}: {e}")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         if not self.price_histories:
             log.warning("No price histories available")
@@ -507,13 +575,26 @@ class TradingBot:
                 log.info(f"[PAPER] BUY {quantity:.4f} {symbol} @ ${current_price:.2f} = ${dollar_amount:.2f}")
                 return {'id': f'paper-{int(time.time())}', 'status': 'filled'}
 
-            if config.IS_CRYPTO(symbol):
-                # robin_stocks crypto orders have no account_number param — always executes
-                # against the login's default account, not config.ACCOUNT_NUMBER.
-                order = rh.order_buy_crypto_by_price(symbol, round(dollar_amount, 2))
-            else:
-                order = rh.order_buy_fractional_by_price(
-                    symbol, round(dollar_amount, 2), account_number=config.ACCOUNT_NUMBER)
+            action_desc = f"BUY {symbol} ${dollar_amount:.2f}"
+            try:
+                with timeout(config.API_TIMEOUT_ORDER):
+                    if config.IS_CRYPTO(symbol):
+                        # robin_stocks crypto orders have no account_number param — always executes
+                        # against the login's default account, not config.ACCOUNT_NUMBER.
+                        order = rh.order_buy_crypto_by_price(symbol, round(dollar_amount, 2))
+                    else:
+                        order = rh.order_buy_fractional_by_price(
+                            symbol, round(dollar_amount, 2), account_number=config.ACCOUNT_NUMBER)
+            except TimeoutError:
+                # Order state is genuinely unknown here — the request may have
+                # reached Robinhood and filled even though we never got a response.
+                # Never assume filled or unfilled; a human needs to check the account.
+                log.error(f"⚠️ ORDER TIMEOUT — {action_desc} after {config.API_TIMEOUT_ORDER}s. "
+                          f"Order status UNKNOWN — verify against the account before assuming "
+                          f"filled or unfilled.")
+                send_telegram_alert(f"⚠️ Order timeout — verify manually: {action_desc}")
+                return None
+
             if order and order.get('id'):
                 log.info(f"✓ [LIVE] BUY {symbol} ${dollar_amount:.2f} @ ~${current_price:.2f} "
                          f"| order {order['id']}")
@@ -530,11 +611,21 @@ class TradingBot:
                 log.info(f"[PAPER] SELL {quantity:.4f} {symbol}")
                 return {'id': f'paper-{int(time.time())}', 'status': 'filled'}
 
-            if config.IS_CRYPTO(symbol):
-                order = rh.order_sell_crypto_by_quantity(symbol, round(quantity, 8))
-            else:
-                order = rh.order_sell_fractional_by_quantity(
-                    symbol, round(quantity, 6), account_number=config.ACCOUNT_NUMBER)
+            action_desc = f"SELL {quantity:.6f} {symbol}"
+            try:
+                with timeout(config.API_TIMEOUT_ORDER):
+                    if config.IS_CRYPTO(symbol):
+                        order = rh.order_sell_crypto_by_quantity(symbol, round(quantity, 8))
+                    else:
+                        order = rh.order_sell_fractional_by_quantity(
+                            symbol, round(quantity, 6), account_number=config.ACCOUNT_NUMBER)
+            except TimeoutError:
+                log.error(f"⚠️ ORDER TIMEOUT — {action_desc} after {config.API_TIMEOUT_ORDER}s. "
+                          f"Order status UNKNOWN — POSITION MAY STILL BE OPEN — verify against "
+                          f"the account before assuming filled or unfilled.")
+                send_telegram_alert(f"⚠️ Order timeout — verify manually: {action_desc}")
+                return None
+
             if order and order.get('id'):
                 log.info(f"✓ [LIVE] SELL {quantity:.6f} {symbol} | order {order['id']}")
                 return order
@@ -560,12 +651,10 @@ class TradingBot:
                 if price:
                     value += price * position['remaining_qty']
             return value
-        try:
-            portfolio = rh.load_portfolio_profile(account_number=config.ACCOUNT_NUMBER)
-            if portfolio and portfolio.get('equity'):
-                return float(portfolio['equity'])
-        except Exception as e:
-            log.warning(f"Could not fetch portfolio value: {e}")
+        portfolio = safe_api_call(rh.load_portfolio_profile, account_number=config.ACCOUNT_NUMBER,
+                                   timeout_secs=config.API_TIMEOUT_PROFILE)
+        if portfolio and portfolio.get('equity'):
+            return float(portfolio['equity'])
         return self.initial_portfolio_value
 
     def check_buying_power(self, position_dollars: float) -> bool:
@@ -577,16 +666,15 @@ class TradingBot:
                 log.info(f"[PAPER] Insufficient simulated cash: ${self.cash:.2f} < ${position_dollars:.2f}")
                 return False
             return True
-        try:
-            account = rh.load_account_profile(account_number=config.ACCOUNT_NUMBER)
-            buying_power = float(account.get('buying_power') or 0)
-            if position_dollars > buying_power:
-                log.warning(f"Insufficient buying power: ${buying_power:.2f} < ${position_dollars:.2f}")
-                return False
-            return True
-        except Exception as e:
-            log.warning(f"Could not check buying power: {e}")
-            return True
+        account = safe_api_call(rh.load_account_profile, account_number=config.ACCOUNT_NUMBER,
+                                 timeout_secs=config.API_TIMEOUT_PROFILE)
+        if account is None:
+            return True  # can't verify — fail open, same as the prior any-error behavior
+        buying_power = float(account.get('buying_power') or 0)
+        if position_dollars > buying_power:
+            log.warning(f"Insufficient buying power: ${buying_power:.2f} < ${position_dollars:.2f}")
+            return False
+        return True
 
     def print_stats(self):
         if self.stats['total_trades'] == 0:

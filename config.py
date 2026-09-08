@@ -100,3 +100,15 @@ DYNAMIC_STOP_SCALAR = 1.5
 ENABLE_FORECAST = os.getenv('ENABLE_FORECAST', 'true').lower() != 'false'
 FORECAST_MAX_CONTEXT = 512   # Tier-1 CPU sizing per TimesFM's own guidance
 FORECAST_HORIZON = 12        # 12 x 5-min candles = 1 hour ahead
+
+# robin_stocks API call timeouts (seconds) — see safe_api_call() in bot.py.
+API_TIMEOUT_QUOTE = 5
+API_TIMEOUT_HISTORICALS = 10
+API_TIMEOUT_PROFILE = 10
+API_TIMEOUT_ORDER = 15
+
+# Telegram alerting for order-timeout events only — order state is genuinely
+# unknown when one fires (never assume filled or unfilled). Both unset means
+# alerting is a silent no-op, not an error.
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
