@@ -16,6 +16,7 @@ import robin_stocks.robinhood as rh
 
 import config
 import session_auth
+import state
 from indicators import score_entry, check_volume_confirmation
 from risk import calculate_hrp_weights, calculate_position_size, calculate_dynamic_stop, portfolio_drawdown_check
 
@@ -170,10 +171,16 @@ class TradingBot:
         }
         self.price_histories = {}
         self.raw_historicals = {}                          # for volume + VWAP
-        self.initial_portfolio_value = config.PORTFOLIO_SIZE
+        # Paper mode compounds across sessions via state.json; live mode always
+        # starts from the broker's real equity, so config.PORTFOLIO_SIZE is just
+        # a label there, never a balance override.
+        self.initial_portfolio_value = (
+            state.load_balance(config.PORTFOLIO_SIZE) if config.PAPER_MODE else config.PORTFOLIO_SIZE
+        )
+        self.cash = self.initial_portfolio_value            # paper-mode ledger; unused in LIVE
         self.is_active = False
         self.pdt_tracker = PDTTracker()                    # [Opt1]
-        self.daily_risk_gate = DailyRiskGate(config.PORTFOLIO_SIZE)  # [Opt7]
+        self.daily_risk_gate = DailyRiskGate(self.initial_portfolio_value)  # [Opt7]
         self.trade_log = []                                # [Opt8]
 
     def authenticate(self):
@@ -340,6 +347,7 @@ class TradingBot:
 
             order = self.place_buy_order(symbol, position_dollars)
             if order:
+                self.cash -= position_dollars
                 self.positions[symbol] = {
                     'entry_price': current_price,
                     'quantity': quantity,
@@ -358,6 +366,7 @@ class TradingBot:
     def _record_exit(self, symbol: str, position: dict, current_price: float,
                      quantity: float, is_win: bool):
         """Update stats, trade log, PDT tracker, and daily risk gate after an exit."""
+        self.cash += current_price * quantity
         pnl = (current_price - position['entry_price']) * quantity
         self.stats['total_profit'] += pnl
         if is_win:
@@ -419,6 +428,7 @@ class TradingBot:
                 if profit_pct >= config.PROFIT_TARGET_SCALE:
                     half_qty = remaining_qty / 2
                     self.place_sell_order(symbol, half_qty)
+                    self.cash += current_price * half_qty
                     position['scaled_out'] = True
                     position['remaining_qty'] = remaining_qty - half_qty
                     position['runner_stop'] = current_price * (1 + config.TRAILING_STOP_PCT)
@@ -448,7 +458,11 @@ class TradingBot:
                     log.warning(f"✗ [RUNNER HARD STOP] {symbol} @ ${current_price:.2f} ({profit_pct*100:.2f}%)")
                     self.place_sell_order(symbol, remaining_qty)
                     symbols_to_exit.append(symbol)
-                    self._record_exit(symbol, position, current_price, remaining_qty, is_win=True)
+                    # Was hardcoded is_win=True — this branch only fires when price has
+                    # fallen back through the stop relative to entry, i.e. a loss on this
+                    # parcel, so it was inflating win-rate stats. Derive it from price instead.
+                    self._record_exit(symbol, position, current_price, remaining_qty,
+                                      is_win=current_price > position['entry_price'])
                     continue
 
                 # Runner trailing stop hit
@@ -518,22 +532,38 @@ class TradingBot:
             return None
 
     def get_current_portfolio_value(self) -> float:
+        # PAPER_MODE never touches the real account — it was previously calling
+        # rh.load_portfolio_profile() unconditionally, which (after account_number
+        # routing was added) returned the real funded account's real, unmoving
+        # equity instead of the simulated one, permanently tripping the daily
+        # drawdown gate. Cash + open-position mark-to-market is the correct paper
+        # equity (the old fallback here double-counted: it added position market
+        # value on top of the full starting balance instead of the cash actually
+        # spent on it).
+        if config.PAPER_MODE:
+            value = self.cash
+            for symbol, position in self.positions.items():
+                price = self.get_current_price(symbol)
+                if price:
+                    value += price * position['remaining_qty']
+            return value
         try:
             portfolio = rh.load_portfolio_profile(account_number=config.ACCOUNT_NUMBER)
             if portfolio and portfolio.get('equity'):
                 return float(portfolio['equity'])
         except Exception as e:
             log.warning(f"Could not fetch portfolio value: {e}")
-        portfolio_value = config.PORTFOLIO_SIZE
-        for symbol, position in self.positions.items():
-            price = self.get_current_price(symbol)
-            if price:
-                portfolio_value += price * position['remaining_qty']
-        return portfolio_value
+        return self.initial_portfolio_value
 
     def check_buying_power(self, position_dollars: float) -> bool:
         if config.PAPER_MODE:
-            return True  # paper trades simulate against config.PORTFOLIO_SIZE, not the real account's cash
+            # Real cash check against the simulated ledger — MAX_POSITIONS(5) x
+            # MAX_POSITION_PCT(25%) can size up to 125% of portfolio value, so
+            # without this a paper account could "buy" more than it has.
+            if position_dollars > self.cash:
+                log.info(f"[PAPER] Insufficient simulated cash: ${self.cash:.2f} < ${position_dollars:.2f}")
+                return False
+            return True
         try:
             account = rh.load_account_profile(account_number=config.ACCOUNT_NUMBER)
             buying_power = float(account.get('buying_power') or 0)
@@ -549,7 +579,7 @@ class TradingBot:
         if self.stats['total_trades'] == 0:
             return
         win_rate = self.stats['winning_trades'] / self.stats['total_trades'] * 100
-        roi = self.stats['total_profit'] / config.PORTFOLIO_SIZE * 100
+        roi = self.stats['total_profit'] / self.initial_portfolio_value * 100
         log.info(f"STATS: {self.stats['total_trades']} trades | "
                  f"{self.stats['winning_trades']} wins ({win_rate:.1f}%) | "
                  f"Profit: ${self.stats['total_profit']:.2f} ({roi:.1f}% ROI) | "
@@ -562,7 +592,7 @@ class TradingBot:
         self.is_active = True
         session_end = time.time() + config.MAX_SESSION_SECONDS
         log.info(f"🤖 Bot started in {'PAPER' if config.PAPER_MODE else 'LIVE'} mode")
-        log.info(f"Portfolio: ${config.PORTFOLIO_SIZE} | Max positions: {config.MAX_POSITIONS} | "
+        log.info(f"Portfolio: ${self.initial_portfolio_value:.2f} | Max positions: {config.MAX_POSITIONS} | "
                  f"Watchlist: {', '.join(config.WATCHLIST)}")
         log.info(f"Session window: {config.MAX_SESSION_SECONDS/3600:.1f}h — "
                  f"all positions close at window end (crypto 24/7, stocks market hours)")
@@ -573,9 +603,11 @@ class TradingBot:
                 if time.time() >= session_end:
                     log.info("Session window ending — closing all positions")
                     self.close_all_positions()
-                    generate_daily_report(config.PORTFOLIO_SIZE,
-                                          self.get_current_portfolio_value(),
+                    ending_value = self.get_current_portfolio_value()
+                    generate_daily_report(self.initial_portfolio_value, ending_value,
                                           self.trade_log, self.pdt_tracker)
+                    if config.PAPER_MODE:
+                        state.save_balance(ending_value)
                     log.info("Session complete — shutting down.")
                     break
 
@@ -600,9 +632,11 @@ class TradingBot:
         except KeyboardInterrupt:
             log.info("Shutting down — closing all positions...")
             self.close_all_positions()
-            generate_daily_report(config.PORTFOLIO_SIZE,
-                                   self.get_current_portfolio_value(),
+            ending_value = self.get_current_portfolio_value()
+            generate_daily_report(self.initial_portfolio_value, ending_value,
                                    self.trade_log, self.pdt_tracker)
+            if config.PAPER_MODE:
+                state.save_balance(ending_value)
             self.is_active = False
 
 
