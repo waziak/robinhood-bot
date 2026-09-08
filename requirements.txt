@@ -7,4 +7,12 @@ pytz>=2023.3
 # Package version tracks TimesFM's newest model (currently 3.0), but the
 # checkpoint it loads is pinned explicitly in forecast.py to the Apache-2.0
 # 2.5 weights — see that file for why 3.0's default weights aren't usable here.
+#
+# The extra index below is required: plain `pip install torch` on Linux pulls
+# the CUDA build (nvidia-cublas/cudnn/nccl/cuda-toolkit, ~1-2GB) even though
+# the GitHub Actions runner has no GPU — none of it is usable, it's pure
+# wasted download/install time every session. This CPU-only wheel exists for
+# the exact torch version timesfm resolves to (confirmed present at
+# download.pytorch.org/whl/cpu for cp311/manylinux/x86_64 before adding this).
+--extra-index-url https://download.pytorch.org/whl/cpu
 timesfm[torch]
