@@ -450,9 +450,6 @@ class TradingBot:
         self.cash += current_price * quantity
         pnl = (current_price - position['entry_price']) * quantity
         self.stats['total_profit'] += pnl
-        log.info(f"[EXIT] {symbol} qty={quantity:.4f} @ ${current_price:.2f} "
-                 f"(entry ${position['entry_price']:.2f}) | P&L=${pnl:+.2f} "
-                 f"({'WIN' if is_win else 'LOSS'})")
         if is_win:
             self.stats['winning_trades'] += 1
         else:
