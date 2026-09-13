@@ -14,3 +14,4 @@ data/
 research/data/
 reports/daily/
 .pytest_cache/
+.mypy_cache/

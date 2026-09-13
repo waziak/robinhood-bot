@@ -95,6 +95,23 @@ TOKEN_VALUE_PATTERNS = [
 ]
 
 
+def test_no_workflow_caches_a_credential_path():
+    """Regression test for the actual incident mechanism: a GitHub Actions workflow using actions/cache (or
+    upload-artifact) to persist a Robinhood session/token file. Session state must never leave the local Keychain."""
+    root = Path(__file__).resolve().parents[1]
+    wf_dir = root / '.github' / 'workflows'
+    if not wf_dir.is_dir():
+        return
+    forbidden_path_fragments = ('.tokens', 'robinhood.pickle', 'rh-session', 'RH_SESSION_SEED')
+    offenders = []
+    for wf in wf_dir.glob('*.y*ml'):
+        text = wf.read_text()
+        if 'actions/cache' in text or 'upload-artifact' in text:
+            if any(frag in text for frag in forbidden_path_fragments):
+                offenders.append(wf.name)
+    assert offenders == [], f'workflow(s) cache/upload a credential-shaped path: {offenders}'
+
+
 def test_repository_contains_no_credential_values():
     root = Path(__file__).resolve().parents[1]
     files = subprocess.run(['git', 'ls-files', '--cached', '--others', '--exclude-standard'], cwd=root,
