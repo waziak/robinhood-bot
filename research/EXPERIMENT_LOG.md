@@ -10,3 +10,36 @@
 | 2026-09-13 18:44 | overnight_drift_trend | `{'trend_filter': True}` | 21158 | -0.013 | REJECTED AT VALIDATION |
 | 2026-09-13 18:44 | trend_sma200 | `{'stop_pct': 0.3}` | 870 | +0.834 | OUT-OF-SAMPLE POSITIVE |
 | 2026-09-13 18:44 | rsi2_mean_reversion | `{'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10}` | 893 | +0.202 | OUT-OF-SAMPLE POSITIVE |
+| 2026-09-13 19:54 | orb_continuation | `{'or_bars': 6, 'rvol_min': 1.2, 'last_entry_minute': 690}` | 103 | -0.278 | REJECTED AT VALIDATION |
+| 2026-09-13 19:54 | vwap_pullback | `{'min_session_ret': 0.003, 'start_minute': 630, 'end_minute': 870, 'touch_tol': 0.0005, 'stop_buffer': 0.001}` | 379 | -0.141 | REJECTED AT VALIDATION |
+| 2026-09-13 19:54 | intraday_momentum_last_hour | `{'min_first_hour_ret': 0.0, 'stop_pct': 0.02}` | 1488 | -0.073 | REJECTED AT VALIDATION |
+| 2026-09-13 19:54 | crypto_tsmom | `{'lookback_h': 168, 'sma_h': 480, 'stop_pct': 0.08, 'hold_h': 24}` | 809 | -0.393 | REJECTED AT VALIDATION |
+| 2026-09-13 19:54 | overnight_drift | `{'trend_filter': False}` | 29196 | -0.015 | REJECTED AT VALIDATION |
+| 2026-09-13 19:54 | overnight_drift_trend | `{'trend_filter': True}` | 21158 | -0.013 | REJECTED AT VALIDATION |
+| 2026-09-13 19:54 | trend_sma200 | `{'stop_pct': 0.3}` | 870 | +0.834 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 19:54 | rsi2_mean_reversion | `{'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10}` | 893 | +0.202 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 19:54 | monthly_sma10_timing_spy | `{'sma_months': 10}` | 25 | +4.028 | INSUFFICIENT SAMPLE |
+| 2026-09-13 19:54 | monthly_sma10_timing_multi | `{'sma_months': 10}` | 443 | +3.380 | OUT-OF-SAMPLE POSITIVE |
+| 2026-09-13 19:54 | sector_rotation_momentum | `{'lookback_months': 6}` | 175 | -0.450 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | orb_continuation | `{'or_bars': 6, 'rvol_min': 1.2, 'last_entry_minute': 690}` | 103 | -0.278 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | vwap_pullback | `{'min_session_ret': 0.003, 'start_minute': 630, 'end_minute': 870, 'touch_tol': 0.0005, 'stop_buffer': 0.001}` | 379 | -0.141 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | intraday_momentum_last_hour | `{'min_first_hour_ret': 0.0, 'stop_pct': 0.02}` | 1488 | -0.073 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | crypto_tsmom | `{'lookback_h': 168, 'sma_h': 480, 'stop_pct': 0.08, 'hold_h': 24}` | 809 | -0.393 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | overnight_drift | `{'trend_filter': False}` | 29196 | -0.015 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | overnight_drift_trend | `{'trend_filter': True}` | 21158 | -0.013 | REJECTED AT VALIDATION |
+| 2026-09-13 19:57 | trend_sma200 | `{'stop_pct': 0.3}` | 870 | +0.834 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 19:57 | rsi2_mean_reversion | `{'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10}` | 893 | +0.202 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 19:57 | monthly_sma10_timing_spy | `{'sma_months': 10}` | 25 | +4.028 | INSUFFICIENT SAMPLE |
+| 2026-09-13 19:57 | monthly_sma10_timing_multi | `{'sma_months': 10}` | 443 | +3.380 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 19:57 | sector_rotation_momentum | `{'lookback_months': 6}` | 175 | -0.450 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | orb_continuation | `{'or_bars': 6, 'rvol_min': 1.2, 'last_entry_minute': 690}` | 103 | -0.278 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | vwap_pullback | `{'min_session_ret': 0.003, 'start_minute': 630, 'end_minute': 870, 'touch_tol': 0.0005, 'stop_buffer': 0.001}` | 379 | -0.141 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | intraday_momentum_last_hour | `{'min_first_hour_ret': 0.0, 'stop_pct': 0.02}` | 1488 | -0.073 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | crypto_tsmom | `{'lookback_h': 168, 'sma_h': 480, 'stop_pct': 0.08, 'hold_h': 24}` | 809 | -0.393 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | overnight_drift | `{'trend_filter': False}` | 29196 | -0.015 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | overnight_drift_trend | `{'trend_filter': True}` | 21158 | -0.013 | REJECTED AT VALIDATION |
+| 2026-09-13 20:01 | trend_sma200 | `{'stop_pct': 0.3}` | 870 | +0.834 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 20:01 | rsi2_mean_reversion | `{'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10}` | 893 | +0.202 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 20:01 | monthly_sma10_timing_spy | `{'sma_months': 10}` | 25 | +4.028 | INSUFFICIENT SAMPLE |
+| 2026-09-13 20:01 | monthly_sma10_timing_multi | `{'sma_months': 10}` | 443 | +3.380 | PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated |
+| 2026-09-13 20:01 | sector_rotation_momentum | `{'lookback_months': 6}` | 175 | -0.450 | REJECTED AT VALIDATION |

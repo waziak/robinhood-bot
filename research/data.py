@@ -12,7 +12,11 @@ import pandas as pd
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 
 # ETFs dominate the universe to limit survivorship bias; the single stocks are today's survivors and are flagged as such.
-ETFS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'XLF', 'XLE', 'XLV', 'TLT', 'GLD']
+# Broad indices, sectors, bonds, gold, international/EM and REITs give the cross-sectional/rotation candidates a
+# genuinely diversified opportunity set and more regime variety (rates, inflation, EM stress, real-estate cycles)
+# than the original 10-ETF set.
+ETFS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'XLF', 'XLE', 'XLV', 'XLI', 'XLY', 'XLP', 'XLU', 'XLB',
+       'TLT', 'SHY', 'GLD', 'EFA', 'EEM', 'VNQ']
 STOCKS = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META']
 CRYPTO = ['BTC-USD', 'ETH-USD']
 COLS = ['open', 'high', 'low', 'close', 'volume']
@@ -94,7 +98,7 @@ def fetch_all():
                  ('yf', sym, '5m', lambda s=sym: fetch_yfinance(s, '5m', '60d'))]
     for prod in CRYPTO:
         jobs += [('cb', prod, '5m', lambda p=prod: fetch_coinbase(p, 300, 180)),
-                 ('cb', prod, '1h', lambda p=prod: fetch_coinbase(p, 3600, 1095))]
+                 ('cb', prod, '1h', lambda p=prod: fetch_coinbase(p, 3600, 1825))]
     for source, sym, interval, fn in jobs:
         try:
             df = fn()

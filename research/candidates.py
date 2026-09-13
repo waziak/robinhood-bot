@@ -141,6 +141,89 @@ def rsi2_mean_reversion(df, p):
     return sig, exit_rule
 
 
+# ── monthly / cross-sectional (low turnover, "smooth returns" family) ───────
+def month_end_flags(df: pd.DataFrame) -> np.ndarray:
+    d = df.index.tz_convert('America/New_York') if df.index.tz else df.index
+    month = np.asarray([(t.year, t.month) for t in d])
+    flags = np.zeros(len(df), dtype=bool)
+    if len(df):
+        flags[:-1] = np.any(month[:-1] != month[1:], axis=1)
+        flags[-1] = True
+    return flags
+
+
+def monthly_sma_timing(df, p):
+    """Faber (2007) timing model: long an index only while its month-end close is above a trailing N-month
+    average; flat (cash) otherwise. Decision at each month's last close, executed at the next trading day's open."""
+    c = df['close'].to_numpy(float)
+    idxs = np.flatnonzero(month_end_flags(df))
+    monthly_c = c[idxs]
+    sma = pd.Series(monthly_c).rolling(p['sma_months']).mean().to_numpy()
+    above = monthly_c > sma
+    rows, in_pos, entry_i = [], False, None
+    for k in range(len(idxs)):
+        i = idxs[k]
+        if i + 1 >= len(df) or not np.isfinite(sma[k]):
+            continue
+        if not in_pos and above[k]:
+            entry_i, in_pos = i + 1, True
+        elif in_pos and not above[k]:
+            rows.append(_monthly_row(df, entry_i, i + 1, 'flat_signal'))
+            in_pos = False
+    if in_pos and entry_i < len(df) - 1:
+        rows.append(_monthly_row(df, entry_i, len(df) - 1, 'data_end'))
+    return rows
+
+
+def _monthly_row(df, entry_i, exit_i, reason):
+    o, c = df['open'].to_numpy(float), df['close'].to_numpy(float)
+    entry_px = o[entry_i]
+    exit_px = o[exit_i] if exit_i < len(df) - 1 or reason != 'data_end' else c[exit_i]
+    path = c[entry_i:exit_i + 1]
+    return {'entry_ts': df.index[entry_i], 'exit_ts': df.index[exit_i], 'entry_raw': entry_px, 'exit_raw': exit_px,
+           'bars_held': exit_i - entry_i, 'exit_reason': reason,
+           'mfe': path.max() / entry_px - 1 if len(path) else 0.0, 'mae': path.min() / entry_px - 1 if len(path) else 0.0}
+
+
+def sector_rotation_monthly(data: dict, p) -> pd.DataFrame:
+    """Cross-sectional momentum (Jegadeesh & Titman 1993): relative strength persists 3-12 months because
+    information diffuses slowly and flows chase recent winners. Monthly, rotate into the single best trailing-
+    `lookback_months` performer among the universe; move to cash if even the best trailing return is negative
+    (absolute-momentum overlay, avoids being long the 'least-bad' asset in a broad selloff)."""
+    calendar = max(data.values(), key=len).index
+    idxs = np.flatnonzero(month_end_flags(pd.DataFrame(index=calendar)))
+    closes = {s: df['close'].reindex(calendar, method='ffill') for s, df in data.items()}
+    opens = {s: df['open'].reindex(calendar, method='ffill') for s, df in data.items()}
+    lb = p['lookback_months']
+    trades, held, entry_i = [], None, None
+
+    def close_out(exit_i, reason):
+        if held is None or exit_i <= entry_i:
+            return None
+        entry_px, exit_px = opens[held].iloc[entry_i], opens[held].iloc[exit_i]
+        path = closes[held].iloc[entry_i:exit_i + 1]
+        return {'entry_ts': calendar[entry_i], 'exit_ts': calendar[exit_i], 'entry_raw': entry_px, 'exit_raw': exit_px,
+               'bars_held': exit_i - entry_i, 'exit_reason': reason, 'symbol': held,
+               'mfe': path.max() / entry_px - 1, 'mae': path.min() / entry_px - 1}
+
+    month_ks = [k for k in range(len(idxs)) if idxs[k] >= lb * 21 and idxs[k] + 1 < len(calendar)]
+    for k in month_ks:
+        i = idxs[k]
+        trailing = {s: closes[s].iloc[i] / closes[s].iloc[max(0, i - lb * 21)] - 1 for s in data}
+        best = max(trailing, key=trailing.get)
+        target = best if trailing[best] > 0 else None
+        if target != held:
+            row = close_out(i + 1, 'rotate')
+            if row:
+                trades.append(row)
+            held, entry_i = target, (i + 1 if target else None)
+    if held is not None:
+        row = close_out(len(calendar) - 1, 'data_end')
+        if row:
+            trades.append(row)
+    return trades
+
+
 CANDIDATES = [
     {'name': 'orb_continuation', 'fn': orb_continuation, 'source': 'yf', 'interval': '5m', 'universe': ETFS + STOCKS,
      'flatten_daily': True, 'params': {'or_bars': 6, 'rvol_min': 1.2, 'last_entry_minute': 690},
@@ -174,4 +257,22 @@ CANDIDATES = [
      'kind': 'exit_rule', 'params': {'rsi_max': 10, 'stop_pct': 0.10, 'max_hold': 10},
      'hypothesis': 'Sharp 2-3 day selloffs inside a long-term uptrend overshoot and revert within days as liquidity providers are paid to absorb flow.',
      'regime': 'long-term uptrend, short-term oversold'},
+    {'name': 'monthly_sma10_timing_spy', 'fn': monthly_sma_timing, 'source': 'yf', 'interval': '1d', 'universe': ['SPY'],
+     'kind': 'trades', 'params': {'sma_months': 10},
+     'hypothesis': "Faber (2007): being long only while price is above its 10-month average sidesteps most of a major bear "
+                   "market's depth (investors as a group are trend-followers at long horizons) while capturing most bull-market "
+                   "upside, at very low turnover (roughly 4-6 decisions/year).",
+     'regime': 'all — designed specifically to reduce drawdown in bear regimes'},
+    {'name': 'monthly_sma10_timing_multi', 'fn': monthly_sma_timing, 'source': 'yf', 'interval': '1d',
+     'universe': ETFS, 'kind': 'trades', 'params': {'sma_months': 10},
+     'hypothesis': 'Same as monthly_sma10_timing_spy, applied per-instrument across a broader liquid-ETF universe to see whether '
+                   'the effect is SPY-specific or general.',
+     'regime': 'all'},
+    {'name': 'sector_rotation_momentum', 'fn': sector_rotation_monthly, 'source': 'yf', 'interval': '1d',
+     'universe': [s for s in ETFS if s != 'SHY'], 'kind': 'portfolio', 'params': {'lookback_months': 6},
+     'hypothesis': 'Jegadeesh & Titman (1993) cross-sectional momentum: information diffuses slowly and flows chase recent '
+                   'winners, so relative strength persists 3-12 months. Monthly, hold only the single best trailing-6-month '
+                   'performer across a diversified ETF set; go to cash if even the best is negative (avoids the "least-bad '
+                   'asset in a crash" trap).',
+     'regime': 'all — cash overlay specifically targets crash regimes'},
 ]
