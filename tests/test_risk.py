@@ -151,6 +151,17 @@ def test_live_requires_explicit_ack(tmp_path, monkeypatch):
     assert load_risk_config(str(p)).live_trading_enabled
 
 
+def test_production_default_approves_no_strategy(env):
+    from trader.risk_engine import RiskEngine
+    strict = RiskEngine(WEEK_1_VALIDATION_MODE, env.store, env.events, clock=env.clock.now)
+    assert WEEK_1_VALIDATION_MODE.approved_strategies == ()
+    for strategy in ('trend_pullback', 'breakout', 'mean_reversion'):
+        p = make_proposal(strategy=strategy, score=100)
+        d = strict.evaluate(p, env.data.get_quote('SPY'), env.data.get_candles('SPY'), env.account(), [], True, 0.0,
+                            env.clock.now())
+        assert not d.approved and 'not approved' in d.reason
+
+
 def test_unknown_config_keys_rejected(tmp_path):
     p = tmp_path / 'risk.json'
     p.write_text('{"max_dialy_loss": 1}')

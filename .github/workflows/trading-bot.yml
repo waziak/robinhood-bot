@@ -1,157 +1,33 @@
-name: Robinhood Trading Bot
+# RETIRED 2026-09-13 — see docs/CREDENTIAL_INCIDENT.md.
+#
+# This workflow used to run the legacy bot.py on a schedule, authenticating by caching a Robinhood OAuth
+# session (access + refresh token) via actions/cache on this PUBLIC repository. That session was exposed for
+# ~5 weeks; see the incident doc for the full account and remediation.
+#
+# The replacement (trader/, see docs/AUTONOMOUS_TRADING_READINESS.md and docs/PHASE_2_READINESS.md)
+# authenticates through the local macOS Keychain only (trader/credentials.py) and deliberately does not run
+# in CI — an unattended broker session cached anywhere on a public repo is the exact failure mode being
+# avoided here. Do not re-add a cron trigger or any broker-credential caching to this workflow.
+#
+# This file is kept only to run the test suite on push, with no broker access at all.
+name: Tests
 
 on:
-  schedule:
-    # 4 sessions/day, ~5.5h each — near-24/7 crypto coverage.
-    # The 12:35 UTC session covers US market open (13:30 UTC / 9:30 ET),
-    # the 18:35 session covers the close.
-    - cron: '35 0 * * *'
-    - cron: '35 6 * * *'
-    - cron: '35 12 * * *'
-    - cron: '35 18 * * *'
-  workflow_dispatch:  # manual trigger for testing
-
-concurrency:
-  group: trading-bot
-  cancel-in-progress: false
+  push:
+  workflow_dispatch:
 
 permissions:
-  contents: write  # needed to commit the updated paper balance back to the repo
+  contents: read
 
 jobs:
-  trade:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # hard cap under GitHub's 6h wall; bot self-exits at 5.5h
-
-    env:
-      MAX_SESSION_SECONDS: '19800'  # 5.5h — leaves 20min buffer before timeout kill
-
+    timeout-minutes: 15
     steps:
-      # A run queued behind the concurrency group otherwise checks out the SHA from trigger time, which
-      # predates the previous run's state.json commit — that silently dropped paper-balance updates.
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      # TimesFM's checkpoint (~800MB) is immutable for a given model id, so a
-      # stable key means: download once, hit cache on every run after. Avoids
-      # re-pulling 800MB x 4 sessions/day forever. Safe to fail open — forecast.py
-      # just disables the forecast signal for the session if the weights aren't
-      # there (e.g. this is the very first run before anything's cached).
-      - name: Restore TimesFM checkpoint cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-timesfm-2.5-200m-pytorch
-
-      # Robinhood no longer offers TOTP 2FA — the only unattended-login option
-      # is a device-approval push, which needs a human tap. Every CI run is a
-      # fresh machine that looks like a new device, so a cold `rh.login()` would
-      # hang on that push every single run. Instead we persist the session
-      # (access + refresh token) across runs via cache, keyed so the newest one
-      # always wins on restore. See session_auth.py for the resume/refresh logic.
-      - name: Restore Robinhood session
-        id: restore_session
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.tokens/robinhood.pickle
-          key: rh-session-${{ github.run_id }}
-          restore-keys: |
-            rh-session-
-
-      # Only needed once, ever — bootstraps the very first session from a
-      # one-time manual login (see scripts/bootstrap_session.py). Once the
-      # cache above has a real session saved, this secret is never touched again.
-      - name: Seed session from secret (first run only)
-        if: steps.restore_session.outputs.cache-matched-key == ''
-        run: |
-          mkdir -p ~/.tokens
-          if [ -n "${{ secrets.RH_SESSION_SEED_B64 }}" ]; then
-            echo "${{ secrets.RH_SESSION_SEED_B64 }}" | base64 -d > ~/.tokens/robinhood.pickle
-            echo "Seeded session from RH_SESSION_SEED_B64"
-          else
-            echo "No cached session and no RH_SESSION_SEED_B64 secret — this run will need a fresh device-approval login"
-          fi
-
-      - name: Safety test gate
-        run: pip install pytest==8.3.3 && python -m pytest tests -q
-
-      # Credentials are scoped to this step only, so dependency install steps never see them.
-      - name: Run trading bot
-        env:
-          RH_USERNAME: ${{ secrets.RH_USERNAME }}
-          RH_PASSWORD: ${{ secrets.RH_PASSWORD }}
-          PAPER_MODE: ${{ secrets.PAPER_MODE }}
-        run: python bot.py
-
-      - name: Save TimesFM checkpoint cache
-        if: always()
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ~/.cache/huggingface
-          key: hf-timesfm-2.5-200m-pytorch
-
-      # PAPER_MODE has no broker ledger, so bot.py persists its simulated equity
-      # to state.json each session (see state.py). Commit it back so the next
-      # scheduled run compounds from real prior equity instead of resetting to
-      # config.PORTFOLIO_SIZE every 6 hours.
-      #
-      # Retries with a fresh reset instead of `git pull --rebase`: two runs
-      # whose checkouts land close together (e.g. one queued behind a long
-      # manual run) both start from a main with no state.json yet, so their
-      # first commits are both "add state.json" — an add/add conflict that
-      # `git pull --rebase` cannot auto-resolve and just fails outright
-      # (observed in production: the whole step failed and that session's
-      # balance update was silently dropped). Since state.json only ever
-      # needs to say "here is this session's ending balance", there's nothing
-      # to merge — each retry just re-applies our value on top of the latest
-      # origin/main instead of replaying a stale diff, so it can't conflict.
-      - name: Persist paper balance
-        if: always()
-        continue-on-error: true
-        run: |
-          if [ ! -f state.json ]; then
-            echo "No state.json produced this run — nothing to persist"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          balance_json=$(cat state.json)
-          for attempt in 1 2 3 4 5; do
-            git fetch origin main
-            git reset --soft origin/main
-            echo "$balance_json" > state.json
-            if [ -z "$(git status --porcelain state.json)" ]; then
-              echo "No balance change to commit"
-              exit 0
-            fi
-            git add state.json
-            git commit -m "Update paper balance [skip ci]"
-            if git push origin HEAD:main; then
-              echo "Pushed on attempt $attempt"
-              exit 0
-            fi
-            echo "Push rejected on attempt $attempt — retrying against latest main"
-            sleep $((RANDOM % 5 + 1))
-          done
-          echo "::warning::Could not persist paper balance after 5 attempts — next session resumes from the last successfully persisted balance"
-          exit 1
-
-      # Persist whatever session ended up valid (resumed, refreshed, or freshly
-      # logged in) so the next scheduled run can skip login entirely.
-      - name: Save Robinhood session
-        if: always()
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ~/.tokens/robinhood.pickle
-          key: rh-session-${{ github.run_id }}
+      - run: pip install -r requirements.txt && pip install pytest==8.3.3
+      - run: python -m pytest tests -q

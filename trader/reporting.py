@@ -63,7 +63,10 @@ def daily_report(store, cfg, day_start: float) -> str:
     if eq:
         ret = (end_eq - start_eq) / start_eq if start_eq else 0
         L += [f'- Starting equity: ${start_eq:.2f}', f'- Ending equity: ${end_eq:.2f}', f"- Cash: ${eq[-1]['cash']:.2f}",
-              f"- Realized P&L: {_fmt(m['total'])}", f'- Unrealized P&L (end): {_fmt(end_eq - start_eq - m["total"])}',
+              f"- REALISTIC realized P&L (actual/simulated fills incl. spread, slippage, fees): {_fmt(m['total'])}",
+              f"- IDEALIZED P&L (same trades at reference mid prices — not a readiness input): "
+              f"{_fmt(sum(p.idealized_pnl for p in d['closed']))}",
+              f'- Unrealized P&L (end): {_fmt(end_eq - start_eq - m["total"])}',
               f'- Daily return: {ret:+.2%}', f"- Max drawdown (intraday): {_max_drawdown([e['equity'] for e in eq]):.2%}"]
     else:
         L.append('- No verified equity snapshots recorded.')

@@ -81,7 +81,8 @@ def run(bars, spread, db_path, starting_cash, warmup_bars, crypto, diagnostic_mi
     clock = Clock(start)
     cfg = replace(WEEK_1_VALIDATION_MODE, universe=tuple(bars), crypto_symbols=tuple(s for s in bars if s in crypto))
     if diagnostic_min_score is not None:
-        cfg = replace(cfg, week1_validation_mode=False, minimum_signal_score=diagnostic_min_score)
+        cfg = replace(cfg, week1_validation_mode=False, minimum_signal_score=diagnostic_min_score,
+                      approved_strategies=('trend_pullback', 'breakout', 'mean_reversion'))
     cfg.validate()
     if os.path.exists(db_path):
         os.remove(db_path)

@@ -35,7 +35,11 @@ class RiskConfig:
     max_bar_move_multiple: float = 6.0
     max_holding_seconds: int = 4 * 3600
     order_ack_timeout_seconds: int = 30
+    unknown_order_grace_seconds: int = 120
     max_order_price_deviation: float = 0.003
+    max_exit_attempts_before_alert: int = 3
+    allow_protective_exits_during_halt: bool = True
+    reconcile_interval_seconds: int = 300
 
     allow_crypto: bool = True
     allow_stocks: bool = True
@@ -46,6 +50,9 @@ class RiskConfig:
     allow_averaging_down: bool = False
     emergency_stop: bool = False
 
+    # Strategies allowed to open positions. Empty by default: a strategy is added only with credible positive
+    # out-of-sample evidence after realistic costs (see research/). Unapproved proposals are still scored and logged.
+    approved_strategies: tuple = ()
     universe: tuple = ('BTC', 'ETH', 'SPY', 'QQQ', 'AAPL', 'NVDA', 'MSFT')
     crypto_symbols: tuple = ('BTC', 'ETH')
     leveraged_symbols: tuple = ('TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'UVXY', 'SPXL', 'SPXS', 'TNA', 'TZA')

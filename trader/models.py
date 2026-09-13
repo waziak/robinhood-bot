@@ -77,18 +77,30 @@ class RiskDecision:
 
 
 class OrderState:
-    PENDING_SUBMIT = 'pending_submit'
-    SUBMITTED = 'submitted'
-    ACKNOWLEDGED = 'acknowledged'
+    CREATED = 'created'              # persisted intent, nothing sent
+    SUBMITTING = 'submitting'        # network call in flight; a crash here means UNKNOWN
+    SUBMITTED = 'submitted'          # broker returned an id
+    ACKNOWLEDGED = 'acknowledged'    # broker confirmed working
     PARTIALLY_FILLED = 'partially_filled'
     FILLED = 'filled'
     CANCELLED = 'cancelled'
     REJECTED = 'rejected'
     EXPIRED = 'expired'
-    UNKNOWN = 'unknown'
+    UNKNOWN = 'unknown'              # may or may not exist at the broker — never treated as filled or failed
 
     TERMINAL = {FILLED, CANCELLED, REJECTED, EXPIRED}
-    OPEN = {PENDING_SUBMIT, SUBMITTED, ACKNOWLEDGED, PARTIALLY_FILLED, UNKNOWN}
+    OPEN = {CREATED, SUBMITTING, SUBMITTED, ACKNOWLEDGED, PARTIALLY_FILLED, UNKNOWN}
+    _RANK = {CREATED: 0, SUBMITTING: 1, SUBMITTED: 2, ACKNOWLEDGED: 3, PARTIALLY_FILLED: 4,
+             FILLED: 5, CANCELLED: 5, REJECTED: 5, EXPIRED: 5}
+
+    @classmethod
+    def is_regression(cls, old: str, new: str) -> bool:
+        """A broker report that would move an order backwards is stale and must be ignored."""
+        if old == cls.UNKNOWN or new == cls.UNKNOWN:
+            return False
+        if old in cls.TERMINAL:
+            return new != old
+        return cls._RANK.get(new, 0) < cls._RANK.get(old, 0)
 
 
 @dataclass
@@ -98,7 +110,7 @@ class Order:
     side: str
     quantity: float
     limit_price: float
-    state: str = OrderState.PENDING_SUBMIT
+    state: str = OrderState.CREATED
     broker_id: Optional[str] = None
     filled_qty: float = 0.0
     avg_fill_price: float = 0.0
@@ -108,6 +120,8 @@ class Order:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     error: str = ''
+    broker_updated_at: float = 0.0
+    submitted_at: float = 0.0
 
     @staticmethod
     def new_client_id() -> str:
@@ -122,11 +136,18 @@ class BrokerOrderStatus:
     avg_fill_price: float
     fees: float = 0.0
     raw_state: str = ''
+    symbol: str = ''
+    side: str = ''
+    quantity: float = 0.0
+    ref_id: str = ''
+    account: str = ''
+    updated_at: float = 0.0
+    created_at: float = 0.0
 
 
 @dataclass
 class Position:
-    position_id: str
+    position_id: str                 # also the trade id
     symbol: str
     strategy: str
     quantity: float
@@ -135,7 +156,7 @@ class Position:
     target: float
     entry_time: float
     reason: str
-    status: str = 'open'
+    status: str = 'open'             # pending_entry | open | exit_pending | closed | cancelled
     realized_pnl: float = 0.0
     fees: float = 0.0
     exit_price: float = 0.0
@@ -145,3 +166,15 @@ class Position:
     mae: float = 0.0
     candidate_id: Optional[int] = None
     intended_entry: float = 0.0
+    initial_stop: float = 0.0
+    entry_order_id: Optional[str] = None
+    exit_order_id: Optional[str] = None
+    reconciliation: str = 'ok'       # ok | discrepancy  (discrepancy = frozen: no automated orders)
+    last_reconciled_at: float = 0.0
+    pnl_verified: int = 1
+    exit_attempts: int = 0
+    entry_reference: float = 0.0     # mid/last price when the entry was decided
+    exit_reference: float = 0.0      # mid price when the exit was decided
+    idealized_pnl: float = 0.0       # P&L at reference prices: no spread, slippage, fees or fill uncertainty
+
+    ACTIVE = ('pending_entry', 'open', 'exit_pending')

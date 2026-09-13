@@ -11,5 +11,6 @@ venv/
 logs/
 *.log
 data/
+research/data/
 reports/daily/
 .pytest_cache/

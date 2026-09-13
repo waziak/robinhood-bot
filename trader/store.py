@@ -1,38 +1,40 @@
-"""SQLite persistence: candidates (incl. rejections), orders, positions, events, flags, instance lock."""
+"""SQLite persistence: candidates (incl. rejections), orders, positions, events, flags, meta, instance lock."""
 import json
 import os
 import socket
 import sqlite3
 import time
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Optional
 
 from trader.models import Order, OrderState, Position
 
-SCHEMA = """
+
+def _cols(cls, types: dict) -> str:
+    return ', '.join(f'{f.name} {types.get(f.name, "")}'.strip() for f in fields(cls))
+
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, symbol TEXT, strategy TEXT, score INTEGER,
   decision TEXT, rejection_reason TEXT, hypothetical_entry REAL, stop REAL, target REAL,
   reward_risk REAL, quantity REAL, notional REAL, market_state TEXT, proposal TEXT, risk_checks TEXT,
   outcome_price REAL, outcome_ts REAL, hypothetical_return REAL
 );
-CREATE TABLE IF NOT EXISTS orders (
-  client_id TEXT PRIMARY KEY, broker_id TEXT, symbol TEXT, side TEXT, quantity REAL, limit_price REAL,
-  state TEXT, filled_qty REAL, avg_fill_price REAL, fees REAL, purpose TEXT, position_id TEXT,
-  created_at REAL, updated_at REAL, error TEXT
-);
-CREATE TABLE IF NOT EXISTS positions (
-  position_id TEXT PRIMARY KEY, symbol TEXT, strategy TEXT, quantity REAL, entry_price REAL, stop REAL,
-  target REAL, entry_time REAL, reason TEXT, status TEXT, realized_pnl REAL, fees REAL, exit_price REAL,
-  exit_time REAL, exit_reason TEXT, mfe REAL, mae REAL, candidate_id INTEGER, intended_entry REAL
-);
+CREATE TABLE IF NOT EXISTS orders ({_cols(Order, {'client_id': 'TEXT PRIMARY KEY'})});
+CREATE TABLE IF NOT EXISTS positions ({_cols(Position, {'position_id': 'TEXT PRIMARY KEY'})});
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, payload TEXT);
 CREATE TABLE IF NOT EXISTS flags (name TEXT PRIMARY KEY, value TEXT, reason TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS equity (ts REAL, equity REAL, cash REAL, source TEXT);
 CREATE INDEX IF NOT EXISTS idx_candidates_ts ON candidates(ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
+CREATE INDEX IF NOT EXISTS idx_orders_broker ON orders(broker_id);
 """
+
+_ORDER_FIELDS = {f.name for f in fields(Order)}
+_POSITION_FIELDS = {f.name for f in fields(Position)}
 
 
 class Store:
@@ -46,7 +48,7 @@ class Store:
         self.db.execute('PRAGMA journal_mode=WAL' if path != ':memory:' else 'PRAGMA journal_mode=MEMORY')
         self.db.executescript(SCHEMA)
 
-    # ── flags / kill switches ──────────────────────────────────────────────
+    # ── flags / kill switches / meta ───────────────────────────────────────
     def set_flag(self, name: str, value: bool, reason: str = ''):
         self.db.execute('INSERT OR REPLACE INTO flags(name, value, reason, ts) VALUES (?,?,?,?)',
                         (name, 'true' if value else 'false', reason, self.clock()))
@@ -57,7 +59,15 @@ class Store:
             return False, '', 0.0
         return row['value'] == 'true', row['reason'], row['ts']
 
-    # ── single-instance lock (heartbeat-based; stale after `stale_after` seconds) ──
+    def set_meta(self, name: str, value: dict):
+        self.db.execute('INSERT OR REPLACE INTO meta(name, value, ts) VALUES (?,?,?)',
+                        (name, json.dumps(value, default=str), self.clock()))
+
+    def get_meta(self, name: str) -> dict:
+        row = self.db.execute('SELECT value, ts FROM meta WHERE name=?', (name,)).fetchone()
+        return {**json.loads(row['value']), '_ts': row['ts']} if row else {}
+
+    # ── single-instance lock ───────────────────────────────────────────────
     def acquire_lock(self, owner: str, stale_after: int = 180) -> bool:
         now = self.clock()
         self.db.execute('BEGIN IMMEDIATE')
@@ -85,45 +95,55 @@ class Store:
     def upsert_order(self, o: Order):
         o.updated_at = self.clock()
         d = asdict(o)
-        cols = ','.join(d)
-        self.db.execute(f'INSERT OR REPLACE INTO orders({cols}) VALUES ({",".join("?" * len(d))})', tuple(d.values()))
+        self.db.execute(f'INSERT OR REPLACE INTO orders({",".join(d)}) VALUES ({",".join("?" * len(d))})', tuple(d.values()))
+
+    @staticmethod
+    def _order(row) -> Order:
+        return Order(**{k: row[k] for k in row.keys() if k in _ORDER_FIELDS})
 
     def get_order(self, client_id: str) -> Optional[Order]:
         row = self.db.execute('SELECT * FROM orders WHERE client_id=?', (client_id,)).fetchone()
-        return Order(**dict(row)) if row else None
+        return self._order(row) if row else None
+
+    def order_by_broker_id(self, broker_id: str) -> Optional[Order]:
+        row = self.db.execute('SELECT * FROM orders WHERE broker_id=?', (broker_id,)).fetchone()
+        return self._order(row) if row else None
 
     def open_orders(self) -> list:
-        q = f"SELECT * FROM orders WHERE state IN ({','.join('?' * len(OrderState.OPEN))})"
-        return [Order(**dict(r)) for r in self.db.execute(q, tuple(OrderState.OPEN))]
+        q = f"SELECT * FROM orders WHERE state IN ({','.join('?' * len(OrderState.OPEN))}) ORDER BY created_at"
+        return [self._order(r) for r in self.db.execute(q, tuple(OrderState.OPEN))]
+
+    def orders_for_position(self, position_id: str) -> list:
+        return [self._order(r) for r in
+                self.db.execute('SELECT * FROM orders WHERE position_id=? ORDER BY created_at', (position_id,))]
 
     def orders_since(self, ts: float) -> list:
-        return [Order(**dict(r)) for r in self.db.execute('SELECT * FROM orders WHERE created_at>=?', (ts,))]
+        return [self._order(r) for r in self.db.execute('SELECT * FROM orders WHERE created_at>=? ORDER BY created_at', (ts,))]
 
     # ── positions ──────────────────────────────────────────────────────────
     def upsert_position(self, p: Position):
         d = asdict(p)
-        cols = ','.join(d)
-        self.db.execute(f'INSERT OR REPLACE INTO positions({cols}) VALUES ({",".join("?" * len(d))})', tuple(d.values()))
+        self.db.execute(f'INSERT OR REPLACE INTO positions({",".join(d)}) VALUES ({",".join("?" * len(d))})', tuple(d.values()))
+
+    @staticmethod
+    def _position(row) -> Position:
+        return Position(**{k: row[k] for k in row.keys() if k in _POSITION_FIELDS})
 
     def open_positions(self) -> list:
-        return [Position(**dict(r)) for r in
-                self.db.execute("SELECT * FROM positions WHERE status IN ('pending_entry','open','closing')")]
-
-    def positions_entered_since(self, ts: float) -> list:
-        return [Position(**dict(r)) for r in self.db.execute(
-            "SELECT * FROM positions WHERE entry_time>=? AND status!='cancelled'", (ts,))]
-
-    def last_cash(self) -> Optional[float]:
-        row = self.db.execute('SELECT cash FROM equity ORDER BY ts DESC LIMIT 1').fetchone()
-        return row['cash'] if row else None
+        q = f"SELECT * FROM positions WHERE status IN ({','.join('?' * len(Position.ACTIVE))}) ORDER BY entry_time"
+        return [self._position(r) for r in self.db.execute(q, Position.ACTIVE)]
 
     def get_position(self, position_id: str) -> Optional[Position]:
         row = self.db.execute('SELECT * FROM positions WHERE position_id=?', (position_id,)).fetchone()
-        return Position(**dict(row)) if row else None
+        return self._position(row) if row else None
 
     def closed_positions_since(self, ts: float) -> list:
-        return [Position(**dict(r)) for r in
+        return [self._position(r) for r in
                 self.db.execute("SELECT * FROM positions WHERE status='closed' AND exit_time>=? ORDER BY exit_time", (ts,))]
+
+    def positions_entered_since(self, ts: float) -> list:
+        return [self._position(r) for r in self.db.execute(
+            "SELECT * FROM positions WHERE entry_time>=? AND status!='cancelled' AND strategy!='unmanaged'", (ts,))]
 
     # ── candidates ─────────────────────────────────────────────────────────
     def add_candidate(self, proposal, decision: str, reason: str, market_state: dict,
@@ -157,9 +177,12 @@ class Store:
         rows = self.db.execute('SELECT * FROM events WHERE ts>=? ORDER BY id', (ts,)).fetchall()
         return [dict(r) for r in rows if not kinds or r['kind'] in kinds]
 
-    def last_event(self, kind: str) -> Optional[dict]:
-        row = self.db.execute('SELECT * FROM events WHERE kind=? ORDER BY id DESC LIMIT 1', (kind,)).fetchone()
-        return json.loads(row['payload']) if row else None
+    def last_event(self, kind: str, where=None) -> Optional[dict]:
+        for row in self.db.execute('SELECT payload FROM events WHERE kind=? ORDER BY id DESC LIMIT 500', (kind,)):
+            p = json.loads(row['payload'])
+            if where is None or where(p):
+                return p
+        return None
 
     def record_equity(self, equity: float, cash: float, source: str):
         self.db.execute('INSERT INTO equity(ts, equity, cash, source) VALUES (?,?,?,?)', (self.clock(), equity, cash, source))
@@ -174,3 +197,7 @@ class Store:
     def first_equity(self) -> Optional[dict]:
         row = self.db.execute('SELECT * FROM equity ORDER BY ts LIMIT 1').fetchone()
         return dict(row) if row else None
+
+    def last_cash(self) -> Optional[float]:
+        row = self.db.execute('SELECT cash FROM equity ORDER BY ts DESC LIMIT 1').fetchone()
+        return row['cash'] if row else None

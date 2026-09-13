@@ -57,6 +57,18 @@ class RiskEngine:
             self.store.set_flag(STOP_NEW_TRADES, False, 'auto-cleared at new UTC day')
         return False, ''
 
+    def entries_allowed(self, now: float = None) -> tuple:
+        blocked, why = self.new_trades_blocked(now)
+        return not blocked, why
+
+    def exits_allowed(self) -> tuple:
+        """Position management is independent of entry permission: daily-loss limits, losing streaks and
+        STOP_NEW_TRADES never block exits. Only EMERGENCY_HALT can, and only if protective exits are disabled."""
+        halted, reason = self.is_emergency_halted()
+        if halted and not self.cfg.allow_protective_exits_during_halt:
+            return False, f'emergency halt (protective exits disabled): {reason}'
+        return True, ''
+
     def record_api_result(self, ok: bool, what: str = ''):
         self.api_error_streak = 0 if ok else self.api_error_streak + 1
         if self.api_error_streak >= self.cfg.max_api_error_streak:
@@ -108,6 +120,8 @@ class RiskEngine:
             return reject(why)
 
         sym = p.symbol
+        if p.strategy not in cfg.approved_strategies:
+            return reject('strategy not approved: no credible out-of-sample evidence after costs')
         if sym not in cfg.universe:
             return reject('symbol not in universe')
         if sym in cfg.leveraged_symbols and not cfg.allow_leverage:
