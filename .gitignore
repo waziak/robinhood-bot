@@ -10,3 +10,6 @@ build/
 venv/
 logs/
 *.log
+data/
+reports/daily/
+.pytest_cache/

@@ -24,13 +24,14 @@ jobs:
     timeout-minutes: 350  # hard cap under GitHub's 6h wall; bot self-exits at 5.5h
 
     env:
-      RH_USERNAME: ${{ secrets.RH_USERNAME }}
-      RH_PASSWORD: ${{ secrets.RH_PASSWORD }}
-      PAPER_MODE: ${{ secrets.PAPER_MODE }}
       MAX_SESSION_SECONDS: '19800'  # 5.5h — leaves 20min buffer before timeout kill
 
     steps:
+      # A run queued behind the concurrency group otherwise checks out the SHA from trigger time, which
+      # predates the previous run's state.json commit — that silently dropped paper-balance updates.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -80,7 +81,15 @@ jobs:
             echo "No cached session and no RH_SESSION_SEED_B64 secret — this run will need a fresh device-approval login"
           fi
 
+      - name: Safety test gate
+        run: pip install pytest==8.3.3 && python -m pytest tests -q
+
+      # Credentials are scoped to this step only, so dependency install steps never see them.
       - name: Run trading bot
+        env:
+          RH_USERNAME: ${{ secrets.RH_USERNAME }}
+          RH_PASSWORD: ${{ secrets.RH_PASSWORD }}
+          PAPER_MODE: ${{ secrets.PAPER_MODE }}
         run: python bot.py
 
       - name: Save TimesFM checkpoint cache
