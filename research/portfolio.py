@@ -10,6 +10,31 @@ import numpy as np
 import pandas as pd
 
 
+def _longest_drawdown_duration(equity: pd.Series, peak: pd.Series) -> tuple:
+    """Longest calendar-day stretch from a new peak to full recovery of that peak (or, if never recovered by the
+    end of the series, from that peak to the last available date — flagged as `ongoing`)."""
+    underwater = (equity < peak).to_numpy()
+    idx = equity.index
+    n = len(underwater)
+    longest_days, ongoing = 0, False
+    i = 0
+    while i < n:
+        if not underwater[i]:
+            i += 1
+            continue
+        run_start = i  # first underwater day; the peak was set the day before
+        while i < n and underwater[i]:
+            i += 1
+        run_end = i - 1
+        recovered = run_end + 1 < n  # loop stopped because underwater[i] is False, i.e. a real recovery, not data end
+        peak_day = idx[run_start - 1]
+        end_day = idx[run_end + 1] if recovered else idx[run_end]
+        days = (end_day - peak_day).days
+        if days > longest_days:
+            longest_days, ongoing = days, not recovered
+    return int(longest_days), bool(ongoing)
+
+
 def build(trades: pd.DataFrame, price_data: dict, calendar: pd.DatetimeIndex) -> dict:
     if trades is None or len(trades) == 0:
         return {}
@@ -31,14 +56,20 @@ def build(trades: pd.DataFrame, price_data: dict, calendar: pd.DatetimeIndex) ->
     equity = (1 + port_ret).cumprod()
     peak = equity.cummax()
     dd = ((peak - equity) / peak).fillna(0.0)
+    dd_duration_days, dd_ongoing = _longest_drawdown_duration(equity, peak)
     weekly = equity.resample('W').last().pct_change().dropna()
     monthly = equity.resample('ME').last().pct_change().dropna()
     years = max((calendar[-1] - calendar[0]).days / 365.25, 1 / 365.25)
     ann_ret = equity.iloc[-1] ** (1 / years) - 1 if equity.iloc[-1] > 0 else -1.0
+    downside = port_ret.clip(upper=0)
     return {
         'total_return_pct': 100 * (equity.iloc[-1] - 1), 'annualized_return_pct': 100 * ann_ret,
-        'max_drawdown_pct': 100 * float(dd.max()), 'sharpe_like': float(port_ret.mean() / port_ret.std() * np.sqrt(252))
-        if port_ret.std() > 0 else np.nan,
+        'max_drawdown_pct': 100 * float(dd.max()), 'max_drawdown_duration_days': dd_duration_days,
+        'max_drawdown_ongoing_at_window_end': dd_ongoing, 'annualized_volatility_pct': 100 * float(port_ret.std() * np.sqrt(252)),
+        'annualized_downside_deviation_pct': 100 * float(np.sqrt((downside ** 2).mean()) * np.sqrt(252)),
+        'sharpe_like': float(port_ret.mean() / port_ret.std() * np.sqrt(252)) if port_ret.std() > 0 else np.nan,
+        'sortino_like': float(port_ret.mean() / np.sqrt((downside ** 2).mean()) * np.sqrt(252))
+        if (downside ** 2).mean() > 0 else np.nan,
         'pct_days_invested': float((n_open > 0).mean()), 'avg_concurrent_positions': float(n_open[n_open > 0].mean()) if (n_open > 0).any() else 0.0,
         'max_concurrent_positions': int(n_open.max()), 'median_concurrent_positions': float(n_open[n_open > 0].median()) if (n_open > 0).any() else 0.0,
         'pct_profitable_weeks': float((weekly > 0).mean()) if len(weekly) else np.nan,

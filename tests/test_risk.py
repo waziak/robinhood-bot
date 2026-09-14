@@ -79,7 +79,10 @@ def test_no_averaging_down_and_max_positions(env):
 
 def test_daily_loss_limit_blocks(env):
     from trader.risk_engine import utc_day_start
-    exit_t = max(utc_day_start() + 1, time.time() - env.cfg.cooldown_after_loss_seconds - 60)
+    # Pin "now" to a fixed time safely past both midnight and the cooldown window — real wall-clock time can
+    # otherwise land within cooldown_after_loss_seconds of UTC midnight, making "today, but outside cooldown" unsatisfiable.
+    env.clock.t = utc_day_start(env.clock.now()) + env.cfg.cooldown_after_loss_seconds + 3600
+    exit_t = env.clock.now() - env.cfg.cooldown_after_loss_seconds - 60
     env.store.upsert_position(closed('SPY', -1.05, exit_t))
     d = evaluate(env)
     assert not d.approved and 'daily loss' in d.reason
@@ -90,14 +93,14 @@ def test_unrealized_loss_counts_toward_daily_limit(env):
 
 
 def test_consecutive_losses_and_cooldown(env):
-    env.store.upsert_position(closed('SPY', -0.05, time.time() - 7200))
-    env.store.upsert_position(closed('SPY', -0.05, time.time() - 7100))
-    env.store.upsert_position(closed('SPY', -0.05, time.time() - 7000))
+    env.store.upsert_position(closed('SPY', -0.05, env.clock.now() - 7200))
+    env.store.upsert_position(closed('SPY', -0.05, env.clock.now() - 7100))
+    env.store.upsert_position(closed('SPY', -0.05, env.clock.now() - 7000))
     assert 'consecutive' in evaluate(env).reason
 
 
 def test_cooldown_after_single_loss(env):
-    env.store.upsert_position(closed('SPY', -0.05, time.time() - 60))
+    env.store.upsert_position(closed('SPY', -0.05, env.clock.now() - 60))
     assert 'cooldown' in evaluate(env).reason
 
 

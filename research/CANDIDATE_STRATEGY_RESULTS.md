@@ -1,6 +1,6 @@
 # Candidate Strategy Results
 
-Generated 2026-09-13 20:01 UTC by `python -m research.run_candidates`.
+Generated 2026-09-13 23:55 UTC by `python -m research.run_candidates`.
 
 All parameters were fixed in `research/candidates.py` before evaluation and were not tuned. Returns are per trade, net of the costs in `research/costs.py` unless labelled gross. Splits are chronological 60/20/20 per candidate data span. The TEST window is evaluated at most once per strategy specification, only after passing validation.
 
@@ -17,6 +17,11 @@ All parameters were fixed in `research/candidates.py` before evaluation and were
 | monthly_sma10_timing_spy | yf:1d × 1 | 25 | +21.323 (n=13) | +4.028 (n=5) | +3.977 | **INSUFFICIENT SAMPLE** |
 | monthly_sma10_timing_multi | yf:1d × 19 | 443 | +11.013 (n=209) | +3.380 (n=110) | +3.305 | **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated** |
 | sector_rotation_momentum | yf:1d × 18 | 175 | +3.218 (n=87) | -0.450 (n=53) | -0.528 | **REJECTED AT VALIDATION** |
+| rsi2_early_exit | yf:1d × 4 | 928 | +0.259 (n=451) | -0.028 (n=235) | -0.078 | **REJECTED AT VALIDATION** |
+| pullback_from_high | yf:1d × 4 | 459 | +0.371 (n=253) | +0.631 (n=93) | +0.581 | **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated** |
+| weekly_rsi2 | yf:1d × 4 | 169 | +1.838 (n=79) | +3.347 (n=49) | +3.294 | **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated** |
+| combined_trend_vol_rsi2 | yf:1d × 4 | 708 | +0.464 (n=350) | +0.193 (n=172) | +0.143 | **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated** |
+| low_volatility_rotation | yf:1d × 18 | 708 | +2.046 (n=318) | +1.509 (n=215) | +1.441 | **OUT-OF-SAMPLE POSITIVE** |
 
 ## orb_continuation
 
@@ -550,3 +555,278 @@ Validation-window baselines (benchmark: SPY):
 Validation gate: train n>=30 ✔, train mean>0 ✔, validation n>=30 ✔, validation mean>0 ✘, validation PF>=1.10 ✘, validation P(mean>0)>=0.80 ✘, validation mean>0 at 2x costs ✘
 
 **Decision: REJECTED AT VALIDATION**
+
+## rsi2_early_exit
+
+**Hypothesis:** Same setup as rsi2_mean_reversion (RSI(2)<10 pullback in a long-term uptrend), but exits on a HARD time-stop
+    at day `hold_days` instead of waiting up to 10 days for a 5-day-SMA reclaim.
+
+    Pre-registered from a pattern visible independently in the TRAIN split of rsi2_mean_reversion (i.e., before
+    ever looking at its validation or test performance): trades held 1-4 days there were strongly and consistently
+    profitable across train/validation/test alike, while trades held 7-10 days were consistently a net loss in
+    every one of those three splits. Hypothesis: the reversion either resolves within a few days or the setup has
+    failed (a stronger, unresolved downtrend or a failed liquidity-provision scenario), so cutting the holding
+    period short should keep the profitable part of the effect and remove the decaying tail — an exit-mechanics
+    change, not a re-tuned entry threshold, and evaluated on its own fresh train/validation/(new)test split.
+**Intended regime:** long-term uptrend, short-term oversold; hypothesis specifically about EXIT timing
+**Parameters (fixed):** `{'rsi_max': 10, 'stop_pct': 0.1, 'hold_days': 4}`
+**Universe:** SPY, QQQ, IWM, DIA (yf 1d)
+
+| split | window | n | mean net % | std % | win rate | payoff | PF | max DD % | 95% CI mean % | Sharpe-like |
+|---|---|---|---|---|---|---|---|---|---|---|
+| train | 1993-01-29 → 2013-03-31 | 451 | +0.259 | 2.220 | 0.57 | 1.02 | 1.36 | 44.5 | [+0.057, +0.465] | 0.55 |
+| validation | 2013-03-31 → 2019-12-21 | 235 | -0.028 | 2.085 | 0.52 | 0.88 | 0.96 | 56.0 | [-0.292, +0.232] | -0.08 |
+| test | 2019-12-21 → 2026-09-11 | sealed — not evaluated |  |  |  |  |  |  |  |  |
+
+Cost sensitivity, net mean % at 0x/1x/2x/3x — train {'0x': 0.32790146980247864, '1x': 0.25882687297986956, '2x': 0.20845132418580292, '3x': 0.15866446499189724}, validation {'0x': 0.029453441678709814, '1x': -0.028361315141172554, '2x': -0.07820325950690467, '3x': -0.12815158904833795}
+
+Walk-forward (pre-test, expanding window; parameters are fixed so each fold is out-of-sample):
+
+- 1993-01-29 → 2007-11-13: n=160, mean net +0.064%
+- 1993-01-29 → 2011-11-25: n=100, mean net +0.071%
+- 1993-01-29 → 2015-12-07: n=166, mean net +0.245%
+- 1993-01-29 → 2019-12-20: n=124, mean net -0.154%
+
+**Capital-constrained portfolio view (validation window)** — the per-trade rows above assume unlimited capital (one fresh full unit per signal); this instead splits ONE pool of capital equally across whatever positions are open on each day (the realistic constraint for a small account):
+
+- Total return: +4.6% · Annualized: +0.7% · Max drawdown: 15.6% · Sharpe-like: 0.13
+- Invested 22% of days · concurrent positions: median 2, average 1.8, max 4
+- 24% of 350 weeks profitable (worst week -6.16%), 51% of months profitable
+
+Validation-window consistency ("smoothness") metrics:
+
+- Downside deviation: 1.643% · Sortino-like: -0.10 · Calmar-like: -0.12
+- Longest losing streak: 9 trades · Longest winning streak: 11 trades
+- Weeks with an exit: 350, 18% profitable, weekly return std 2.489%, worst week -23.496%
+- Months with an exit: 81, 49% profitable
+
+Validation-window baselines (benchmark: SPY):
+
+| | n | mean net % | win rate | max DD % | total % |
+|---|---|---|---|---|---|
+| candidate | 235 | -0.028 | 0.52 | 56.0 | -6.7 |
+| buy & hold | 1695 | +0.054 | 0.55 | 20.9 | +91.0 |
+| 200d trend filter | 12 | -0.048 | 0.33 | 11.5 | -0.6 |
+| random entry (avg of 300 sims) | 235 | +0.159 | 0.59 | 21.9 | +37.3 |
+| cash / no trade | 0 | 0.000 | — | 0.0 | 0.0 |
+
+Validation gate: train n>=30 ✔, train mean>0 ✔, validation n>=30 ✔, validation mean>0 ✘, validation PF>=1.10 ✘, validation P(mean>0)>=0.80 ✘, validation mean>0 at 2x costs ✘
+
+**Decision: REJECTED AT VALIDATION**
+
+## pullback_from_high
+
+**Hypothesis:** Cross-check of the same broad hypothesis (short-term overreaction inside a long-term uptrend reverts) using
+    a DIFFERENT technical construction — a simple % pullback from the trailing high instead of RSI(2) — to test
+    whether the effect is specific to the RSI formula or a more general short-term-oversold phenomenon.
+**Intended regime:** long-term uptrend, short-term oversold
+**Parameters (fixed):** `{'high_lookback': 10, 'pullback_pct': 0.03, 'stop_pct': 0.1, 'max_hold': 10}`
+**Universe:** SPY, QQQ, IWM, DIA (yf 1d)
+
+| split | window | n | mean net % | std % | win rate | payoff | PF | max DD % | 95% CI mean % | Sharpe-like |
+|---|---|---|---|---|---|---|---|---|---|---|
+| train | 1993-01-29 → 2013-03-31 | 253 | +0.371 | 2.169 | 0.72 | 0.67 | 1.68 | 26.2 | [+0.100, +0.623] | 0.61 |
+| validation | 2013-03-31 → 2019-12-21 | 93 | +0.631 | 1.274 | 0.73 | 1.17 | 3.20 | 9.7 | [+0.374, +0.884] | 1.84 |
+| test | 2019-12-21 → 2026-09-11 | sealed — not evaluated |  |  |  |  |  |  |  |  |
+
+Cost sensitivity, net mean % at 0x/1x/2x/3x — train {'0x': 0.4396568089179021, '1x': 0.3710821257256875, '2x': 0.31947263649633034, '3x': 0.2711408631751666}, validation {'0x': 0.6888850985272367, '1x': 0.6310776344640155, '2x': 0.5805425379951203, '3x': 0.5302740954716902}
+
+Walk-forward (pre-test, expanding window; parameters are fixed so each fold is out-of-sample):
+
+- 1993-01-29 → 2007-11-13: n=63, mean net +0.289%
+- 1993-01-29 → 2011-11-25: n=77, mean net +0.336%
+- 1993-01-29 → 2015-12-07: n=58, mean net +0.686%
+- 1993-01-29 → 2019-12-20: n=54, mean net +0.482%
+
+**Capital-constrained portfolio view (validation window)** — the per-trade rows above assume unlimited capital (one fresh full unit per signal); this instead splits ONE pool of capital equally across whatever positions are open on each day (the realistic constraint for a small account):
+
+- Total return: +26.6% · Annualized: +3.6% · Max drawdown: 7.9% · Sharpe-like: 0.65
+- Invested 8% of days · concurrent positions: median 1, average 1.6, max 4
+- 12% of 350 weeks profitable (worst week -5.04%), 35% of months profitable
+
+Validation-window consistency ("smoothness") metrics:
+
+- Downside deviation: 0.647% · Sortino-like: 3.63 · Calmar-like: 6.07
+- Longest losing streak: 4 trades · Longest winning streak: 13 trades
+- Weeks with an exit: 338, 12% profitable, weekly return std 1.008%, worst week -6.064%
+- Months with an exit: 79, 38% profitable
+
+Validation-window baselines (benchmark: SPY):
+
+| | n | mean net % | win rate | max DD % | total % |
+|---|---|---|---|---|---|
+| candidate | 93 | +0.631 | 0.73 | 9.7 | +58.7 |
+| buy & hold | 1695 | +0.054 | 0.55 | 20.9 | +91.0 |
+| 200d trend filter | 12 | -0.048 | 0.33 | 11.5 | -0.6 |
+| random entry (avg of 300 sims) | 93 | +0.099 | 0.57 | 12.7 | +9.2 |
+| cash / no trade | 0 | 0.000 | — | 0.0 | 0.0 |
+
+Validation gate: train n>=30 ✔, train mean>0 ✔, validation n>=30 ✔, validation mean>0 ✔, validation PF>=1.10 ✔, validation P(mean>0)>=0.80 ✔, validation mean>0 at 2x costs ✔
+
+**Decision: PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+
+## weekly_rsi2
+
+**Hypothesis:** Same reversion hypothesis sampled at WEEKLY resolution instead of daily — a structurally lower-turnover
+    variant, and a check for whether the effect is a short-horizon (daily) microstructure artifact or genuinely
+    present at a coarser, even-lower-intervention timescale.
+**Intended regime:** long-term uptrend, short-term oversold, weekly resolution
+**Parameters (fixed):** `{'rsi_max': 10, 'sma_weeks': 40, 'hold_weeks': 3}`
+**Universe:** SPY, QQQ, IWM, DIA (yf 1d)
+
+| split | window | n | mean net % | std % | win rate | payoff | PF | max DD % | 95% CI mean % | Sharpe-like |
+|---|---|---|---|---|---|---|---|---|---|---|
+| train | 1993-01-29 → 2013-03-31 | 79 | +1.838 | 4.480 | 0.67 | 1.36 | 2.78 | 17.5 | [+0.860, +2.841] | 0.81 |
+| validation | 2013-03-31 → 2019-12-21 | 49 | +3.347 | 3.664 | 0.84 | 2.11 | 10.81 | 16.0 | [+2.284, +4.350] | 2.47 |
+| test | 2019-12-21 → 2026-09-11 | sealed — not evaluated |  |  |  |  |  |  |  |  |
+
+Cost sensitivity, net mean % at 0x/1x/2x/3x — train {'0x': 1.9065172093858713, '1x': 1.8377598168589582, '2x': 1.785755825677694, '3x': 1.737612856063121}, validation {'0x': 3.405002659369428, '1x': 3.346606694182573, '2x': 3.2939485993799567, '3x': 3.241251284632672}
+
+Walk-forward (pre-test, expanding window; parameters are fixed so each fold is out-of-sample):
+
+- 1993-01-29 → 2007-11-13: n=30, mean net +1.368%
+- 1993-01-29 → 2011-11-25: n=22, mean net +3.063%
+- 1993-01-29 → 2015-12-07: n=27, mean net +2.852%
+- 1993-01-29 → 2019-12-20: n=30, mean net +2.915%
+
+**Capital-constrained portfolio view (validation window)** — the per-trade rows above assume unlimited capital (one fresh full unit per signal); this instead splits ONE pool of capital equally across whatever positions are open on each day (the realistic constraint for a small account):
+
+- Total return: +69.2% · Annualized: +8.1% · Max drawdown: 8.2% · Sharpe-like: 1.37
+- Invested 20% of days · concurrent positions: median 1, average 1.8, max 4
+- 13% of 350 weeks profitable (worst week -3.62%), 28% of months profitable
+
+Validation-window consistency ("smoothness") metrics:
+
+- Downside deviation: 1.274% · Sortino-like: 7.09 · Calmar-like: 10.28
+- Longest losing streak: 4 trades · Longest winning streak: 12 trades
+- Weeks with an exit: 323, 8% profitable, weekly return std 2.741%, worst week -7.867%
+- Months with an exit: 75, 24% profitable
+
+Validation-window baselines (benchmark: SPY):
+
+| | n | mean net % | win rate | max DD % | total % |
+|---|---|---|---|---|---|
+| candidate | 49 | +3.347 | 0.84 | 16.0 | +164.0 |
+| buy & hold | 1695 | +0.054 | 0.55 | 20.9 | +91.0 |
+| 200d trend filter | 12 | -0.048 | 0.33 | 11.5 | -0.6 |
+| random entry (avg of 300 sims) | 49 | +0.153 | 0.59 | 9.7 | +7.5 |
+| cash / no trade | 0 | 0.000 | — | 0.0 | 0.0 |
+
+Validation gate: train n>=30 ✔, train mean>0 ✔, validation n>=30 ✔, validation mean>0 ✔, validation PF>=1.10 ✔, validation P(mean>0)>=0.80 ✔, validation mean>0 at 2x costs ✔
+
+**Decision: PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+
+## combined_trend_vol_rsi2
+
+**Hypothesis:** Combines three INDEPENDENTLY defensible signals rather than adding indicators for their own sake: (1) the
+    existing trend filter (price above its 200-day average), (2) the existing RSI(2) oversold pullback, and (3) a
+    volatility filter requiring the instrument NOT be in its own trailing-high-volatility tercile. Hypothesis:
+    rsi2_mean_reversion's diagnostic breakdown showed its 'high' realized-volatility bucket was flat-to-negative in
+    2 of 3 splits (train -0.04%, test -0.12%) while 'low'/'mid' were consistently positive in all three — excluding
+    the high-volatility tercile should remove a specifically weak slice rather than mine for a better one, since the
+    other two buckets are kept exactly as before, unfiltered.
+**Intended regime:** long-term uptrend, short-term oversold, excluding high-volatility regime
+**Parameters (fixed):** `{'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10}`
+**Universe:** SPY, QQQ, IWM, DIA (yf 1d)
+
+| split | window | n | mean net % | std % | win rate | payoff | PF | max DD % | 95% CI mean % | Sharpe-like |
+|---|---|---|---|---|---|---|---|---|---|---|
+| train | 1993-01-29 → 2013-03-31 | 350 | +0.464 | 2.000 | 0.73 | 0.73 | 1.98 | 46.1 | [+0.254, +0.667] | 0.97 |
+| validation | 2013-03-31 → 2019-12-21 | 172 | +0.193 | 1.338 | 0.66 | 0.75 | 1.47 | 31.8 | [-0.015, +0.388] | 0.73 |
+| test | 2019-12-21 → 2026-09-11 | sealed — not evaluated |  |  |  |  |  |  |  |  |
+
+Cost sensitivity, net mean % at 0x/1x/2x/3x — train {'0x': 0.5332430219868276, '1x': 0.46350885920710616, '2x': 0.4133636696824087, '3x': 0.36427858034632876}, validation {'0x': 0.2507731807957411, '1x': 0.1929840006049746, '2x': 0.14284780167584182, '3x': 0.09249788301061744}
+
+Walk-forward (pre-test, expanding window; parameters are fixed so each fold is out-of-sample):
+
+- 1993-01-29 → 2007-11-13: n=122, mean net +0.287%
+- 1993-01-29 → 2011-11-25: n=83, mean net +0.293%
+- 1993-01-29 → 2015-12-07: n=128, mean net +0.448%
+- 1993-01-29 → 2019-12-20: n=92, mean net +0.030%
+
+**Capital-constrained portfolio view (validation window)** — the per-trade rows above assume unlimited capital (one fresh full unit per signal); this instead splits ONE pool of capital equally across whatever positions are open on each day (the realistic constraint for a small account):
+
+- Total return: +16.6% · Annualized: +2.3% · Max drawdown: 13.5% · Sharpe-like: 0.39
+- Invested 19% of days · concurrent positions: median 2, average 1.9, max 4
+- 19% of 350 weeks profitable (worst week -4.59%), 48% of months profitable
+
+Validation-window consistency ("smoothness") metrics:
+
+- Downside deviation: 1.022% · Sortino-like: 0.96 · Calmar-like: 1.04
+- Longest losing streak: 4 trades · Longest winning streak: 13 trades
+- Weeks with an exit: 349, 17% profitable, weekly return std 1.228%, worst week -9.941%
+- Months with an exit: 81, 51% profitable
+
+Validation-window baselines (benchmark: SPY):
+
+| | n | mean net % | win rate | max DD % | total % |
+|---|---|---|---|---|---|
+| candidate | 172 | +0.193 | 0.66 | 31.8 | +33.2 |
+| buy & hold | 1695 | +0.054 | 0.55 | 20.9 | +91.0 |
+| 200d trend filter | 12 | -0.048 | 0.33 | 11.5 | -0.6 |
+| random entry (avg of 300 sims) | 172 | +0.180 | 0.59 | 19.5 | +31.0 |
+| cash / no trade | 0 | 0.000 | — | 0.0 | 0.0 |
+
+Validation gate: train n>=30 ✔, train mean>0 ✔, validation n>=30 ✔, validation mean>0 ✔, validation PF>=1.10 ✔, validation P(mean>0)>=0.80 ✔, validation mean>0 at 2x costs ✔
+
+**Decision: PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+
+## low_volatility_rotation
+
+**Hypothesis:** Low-volatility anomaly (Ang, Hodges, Xing & Zhang 2006; Baker, Bradley & Wurgler 2011): lower-volatility
+    assets have historically delivered comparable or better risk-adjusted returns than higher-volatility ones,
+    plausibly because leverage-constrained investors bid up higher-beta assets for a given expected return. Monthly,
+    equal-weight-hold the `top_n` lowest-trailing-realized-volatility instruments in the universe; no absolute
+    filter (always invested, unlike the momentum rotation candidate) since low-vol is a relative-ranking effect.
+**Intended regime:** all — a relative-ranking effect, not regime-dependent by construction
+**Parameters (fixed):** `{'vol_lookback_months': 6, 'top_n': 5}`
+**Universe:** SPY, QQQ, IWM, DIA, XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, TLT, GLD, EFA, EEM, VNQ (yf 1d)
+
+| split | window | n | mean net % | std % | win rate | payoff | PF | max DD % | 95% CI mean % | Sharpe-like |
+|---|---|---|---|---|---|---|---|---|---|---|
+| train | 1993-01-29 → 2013-03-31 | 318 | +2.046 | 12.498 | 0.58 | 1.44 | 2.01 | 184.8 | [+0.839, +3.558] | 0.65 |
+| validation | 2013-03-31 → 2019-12-21 | 215 | +1.509 | 4.829 | 0.64 | 1.31 | 2.31 | 49.5 | [+0.870, +2.134] | 1.77 |
+| test | 2019-12-21 → 2026-09-11 | 175 | +1.604 | 8.074 | 0.56 | 1.45 | 1.84 | 92.1 | [+0.436, +2.797] | 1.01 |
+
+Cost sensitivity, net mean % at 0x/1x/2x/3x — train {'0x': 2.168795464813359, '1x': 2.045682691692902, '2x': 1.969972129171496, '3x': 1.8956330701751143}, validation {'0x': 1.6007847613195156, '1x': 1.5088860355894322, '2x': 1.441272155596541, '3x': 1.3684094563671207}, test {'0x': 1.687878006609185, '1x': 1.6041170095160362, '2x': 1.5298888097955015, '3x': 1.4565901513490291}
+
+Walk-forward (pre-test, expanding window; parameters are fixed so each fold is out-of-sample):
+
+- 1993-01-29 → 2007-11-13: n=90, mean net +2.447%
+- 1993-01-29 → 2011-11-25: n=80, mean net +1.808%
+- 1993-01-29 → 2015-12-07: n=110, mean net +1.932%
+- 1993-01-29 → 2019-12-20: n=125, mean net +1.755%
+
+**Capital-constrained portfolio view (validation window)** — the per-trade rows above assume unlimited capital (one fresh full unit per signal); this instead splits ONE pool of capital equally across whatever positions are open on each day (the realistic constraint for a small account):
+
+- Total return: +92.0% · Annualized: +10.2% · Max drawdown: 14.9% · Sharpe-like: 1.12
+- Invested 97% of days · concurrent positions: median 5, average 5.0, max 5
+- 62% of 350 weeks profitable (worst week -5.12%), 64% of months profitable
+
+Validation-window consistency ("smoothness") metrics:
+
+- Downside deviation: 2.508% · Sortino-like: 3.40 · Calmar-like: 6.56
+- Longest losing streak: 10 trades · Longest winning streak: 15 trades
+- Weeks with an exit: 345, 8% profitable, weekly return std 7.361%, worst week -38.139%
+- Months with an exit: 80, 35% profitable
+
+Test-window consistency ("smoothness") metrics:
+
+- Downside deviation: 3.837% · Sortino-like: 2.13 · Calmar-like: 3.05
+- Longest losing streak: 8 trades · Longest winning streak: 10 trades
+- Weeks with an exit: 341, 6% profitable, weekly return std 10.790%, worst week -60.033%
+- Months with an exit: 79, 25% profitable
+
+Validation-window baselines (benchmark: SPY):
+
+| | n | mean net % | win rate | max DD % | total % |
+|---|---|---|---|---|---|
+| candidate | 215 | +1.509 | 0.64 | 49.5 | +324.4 |
+| buy & hold | 1695 | +0.054 | 0.55 | 20.9 | +91.0 |
+| 200d trend filter | 12 | -0.048 | 0.33 | 11.5 | -0.6 |
+| random entry (avg of 300 sims) | 215 | +1.913 | 0.73 | 51.2 | +411.4 |
+| cash / no trade | 0 | 0.000 | — | 0.0 | 0.0 |
+
+Validation gate: train n>=30 ✔, train mean>0 ✔, validation n>=30 ✔, validation mean>0 ✔, validation PF>=1.10 ✔, validation P(mean>0)>=0.80 ✔, validation mean>0 at 2x costs ✔
+
+**Decision: OUT-OF-SAMPLE POSITIVE**

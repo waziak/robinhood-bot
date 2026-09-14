@@ -60,7 +60,11 @@ def main():
                 if p:
                     lines += ['', '**Capital-constrained portfolio view (test window):**',
                              f"- Total return: {p['total_return_pct']:+.1f}% · Annualized: {p['annualized_return_pct']:+.1f}% · "
-                             f"Max drawdown: {p['max_drawdown_pct']:.1f}% · Sharpe-like: {p['sharpe_like']:.2f}",
+                             f"Max drawdown: {p['max_drawdown_pct']:.1f}% (duration {p['max_drawdown_duration_days']}d"
+                             f"{', ongoing at window end' if p['max_drawdown_ongoing_at_window_end'] else ''})",
+                             f"- Sharpe-like: {p['sharpe_like']:.2f} · Sortino-like: {p['sortino_like']:.2f} · "
+                             f"Annualized volatility: {p['annualized_volatility_pct']:.1f}% · Annualized downside deviation: "
+                             f"{p['annualized_downside_deviation_pct']:.1f}%",
                              f"- Concurrent positions: median {p['median_concurrent_positions']:.0f}, average "
                              f"{p['avg_concurrent_positions']:.1f}, max {p['max_concurrent_positions']}",
                              f"- {p['pct_profitable_weeks']:.0%} of {p['weeks']} weeks profitable (worst week "

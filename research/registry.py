@@ -16,6 +16,7 @@ import os
 from datetime import datetime, timezone
 
 from research.candidates import CANDIDATES
+from research.multiple_testing import bonferroni_percentile, total_hypotheses
 from research.reality_check import main as reality_check_main
 from research.run_candidates import evaluate
 
@@ -29,7 +30,7 @@ LEGACY = [
 ]
 
 
-def classify(decision: str, verdicts: dict) -> tuple:
+def classify(decision: str, verdicts: dict, adjusted_bar: float) -> tuple:
     if decision in ('NO DATA',):
         return 'RESEARCHING', 'no historical data available yet'
     if decision == 'INSUFFICIENT SAMPLE':
@@ -42,9 +43,15 @@ def classify(decision: str, verdicts: dict) -> tuple:
         if test is None:
             return 'RESEARCHING', 'passed the validation gate but produced no out-of-sample trades for a reality check yet'
         test_pct, excess = test[0], test[1]
-        if test_pct is not None and test_pct >= 0.95 and excess > 0 and (val_pct or 0) >= 0.80:
-            return 'SHADOW_CANDIDATE', (f'beats a random-entry null at ≥95th percentile in the test window '
-                                        f'(validation {100 * val_pct:.0f}th, test {100 * test_pct:.0f}th) — ready for a completed shadow-mode run')
+        if test_pct is not None and test_pct >= adjusted_bar and excess > 0 and (val_pct or 0) >= adjusted_bar:
+            return 'SHADOW_CANDIDATE', (f'beats a random-entry null at or above the multiple-testing-adjusted '
+                                        f'{100 * adjusted_bar:.2f}th-percentile bar in BOTH validation ({100 * val_pct:.0f}th) '
+                                        f'and test ({100 * test_pct:.0f}th) — ready for a completed shadow-mode run')
+        if test_pct is not None and test_pct >= 0.95 and excess > 0:
+            return 'RESEARCHING', (f'clears the nominal single-test 95th-percentile bar (test {100 * test_pct:.0f}th) but NOT '
+                                   f'the multiple-testing-adjusted {100 * adjusted_bar:.2f}th-percentile bar required given '
+                                   f'{total_hypotheses()} hypotheses tested (validation {100 * (val_pct or 0):.0f}th) — '
+                                   'promising but not yet promotable; see research/multiple_testing.py')
         if test_pct is not None and test_pct >= 0.80 and excess > 0:
             return 'RESEARCHING', (f'weak/inconclusive edge vs. random-entry null (test {100 * test_pct:.0f}th percentile, '
                                    f'validation {100 * (val_pct or 0):.0f}th) — passed the formal gate but not the reality check; needs more evidence')
@@ -56,6 +63,7 @@ def classify(decision: str, verdicts: dict) -> tuple:
 def build():
     results = [evaluate(c) for c in CANDIDATES]
     verdicts_by_name = reality_check_main()  # also (re)writes REALITY_CHECK.md
+    adjusted_bar = bonferroni_percentile(total_hypotheses())
     rows = []
     for name, status, rationale in LEGACY:
         rows.append({'name': name, 'family': 'legacy production', 'status': status, 'rationale': rationale})
@@ -64,7 +72,7 @@ def build():
         family = {'5m': 'intraday', '1h': 'multi-hour', '1d': 'daily/monthly'}.get(c['interval'], c['interval'])
         if c.get('kind') == 'portfolio':
             family += ' (cross-sectional rotation)'
-        status, rationale = classify(r['decision'], verdicts_by_name.get(c['name'], {}))
+        status, rationale = classify(r['decision'], verdicts_by_name.get(c['name'], {}), adjusted_bar)
         rows.append({'name': c['name'], 'family': family, 'status': status, 'rationale': rationale,
                      'trades': r.get('trades', 0), 'decision': r['decision']})
     return rows
@@ -72,6 +80,7 @@ def build():
 
 def main():
     rows = build()
+    adjusted_bar = bonferroni_percentile(total_hypotheses())
     now = datetime.now(timezone.utc)
     order = {'LIVE_ELIGIBLE': 0, 'SHADOW_VALIDATED': 1, 'SHADOW_CANDIDATE': 2, 'RESEARCHING': 3, 'IDEA': 4, 'FAILED': 5, 'RETIRED': 6}
     rows.sort(key=lambda r: order.get(r['status'], 9))
@@ -85,9 +94,11 @@ def main():
     for r in rows:
         L.append(f"| {r['name']} | {r['family']} | **{r['status']}** | {r.get('trades', '—')} | {r['rationale']} |")
     L += ['', '## Promotion rules', '',
-          '- **SHADOW_CANDIDATE** (automatic, this script): passed the pre-registered validation gate AND beats a '
-          'random-entry null at ≥95th percentile in the sealed test window (≥80th in validation too, so it is not a '
-          'one-window fluke). Nothing currently qualifies.',
+          f'- **SHADOW_CANDIDATE** (automatic, this script): passed the pre-registered validation gate AND beats a '
+          f'random-entry null at or above the multiple-testing-adjusted {100 * adjusted_bar:.2f}th percentile '
+          f'(Bonferroni, {total_hypotheses()} hypotheses tested — see `research/multiple_testing.py`) in BOTH the '
+          'validation and test windows, so it is neither a one-window fluke nor a false positive expected from '
+          'testing this many hypotheses. The bar rises automatically as more hypotheses are added.',
           '- **SHADOW_VALIDATED** (manual, requires evidence this script cannot produce): a SHADOW_CANDIDATE run for '
           'real in `trader.agent --mode shadow` for enough calendar time to accumulate a meaningful trade count, '
           'with results consistent with the research-stage numbers.',
@@ -99,6 +110,10 @@ def main():
     with open(os.path.join(HERE, 'STRATEGY_REGISTRY.md'), 'w') as f:
         f.write('\n'.join(L) + '\n')
     print('\n'.join(L))
+
+    from research.multiple_testing import render_report
+    with open(os.path.join(HERE, 'MULTIPLE_TESTING.md'), 'w') as f:
+        f.write(render_report(rows))
 
 
 if __name__ == '__main__':

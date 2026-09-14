@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from research import backtest, baselines, candidates, portfolio, splits, stats
+from research import backtest, baselines, candidates, portfolio, regime, splits, stats
 from research.backtest import Signal
 from research.costs import CostModel, for_symbol
 
@@ -94,10 +94,73 @@ def test_daily_rule_strategies_have_no_lookahead():
     df = bars(900, freq='1D', seed=5, drift=0.0004)
     cut = 600
     for fn, params in ((candidates.rsi2_mean_reversion, {'rsi_max': 30, 'stop_pct': 0.1, 'max_hold': 10}),
-                       (candidates.trend_sma200, {'stop_pct': 0.3})):
+                       (candidates.trend_sma200, {'stop_pct': 0.3}),
+                       (candidates.pullback_from_high, {'high_lookback': 10, 'pullback_pct': 0.03, 'stop_pct': 0.1, 'max_hold': 10}),
+                       (candidates.combined_trend_vol_rsi2, {'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10})):
         (full, rule_full), (trunc, rule_trunc) = fn(df, params), fn(df.iloc[:cut], params)
         assert _signal_keys([s for s in full if s.i < cut]) == _signal_keys(trunc)
         assert np.array_equal(rule_full[:cut], rule_trunc)
+
+
+def test_rsi2_early_exit_no_lookahead():
+    df = bars(900, freq='1D', seed=5, drift=0.0004)
+    cut = 600
+    params = {'rsi_max': 10, 'stop_pct': 0.1, 'hold_days': 4}
+    full = candidates.rsi2_early_exit(df, params)
+    trunc = candidates.rsi2_early_exit(df.iloc[:cut], params)
+    assert _signal_keys([s for s in full if s.i < cut]) == _signal_keys(trunc) and len(trunc) > 0
+
+
+def test_weekly_rsi2_bars_held_is_trading_days_not_weeks():
+    """Regression test: bars_held must be in the same trading-day units used everywhere else (random_null loads
+    daily bars and uses bars_held as a daily offset) — recording it in weeks previously made the random-entry null
+    draw ~4-day holds against this strategy's real ~4-week holds, fabricating an apparent edge."""
+    df = regime_switch_bars(500, 0.002, 400, -0.0015, seed=31)
+    rows = candidates.weekly_rsi2(df, {'rsi_max': 10, 'sma_weeks': 40, 'hold_weeks': 3})
+    assert rows and all(r['bars_held'] >= 10 for r in rows)  # ~3-4 weeks of trading days, never "~4"
+
+
+def test_weekly_rsi2_no_lookahead():
+    df = regime_switch_bars(500, 0.002, 400, -0.0015, seed=30)
+    cut = 700
+    params = {'rsi_max': 10, 'sma_weeks': 40, 'hold_weeks': 3}
+    full = candidates.weekly_rsi2(df, params)
+    trunc = candidates.weekly_rsi2(df.iloc[:cut], params)
+    cutoff_ts = df.index[cut - 1]
+    key = lambda rows: [(r['entry_ts'], r['exit_ts']) for r in rows if r['exit_ts'] <= cutoff_ts]
+    # exclude any trade whose exit lands exactly on the truncated series' last available week (a data-end artifact)
+    trunc_last_week = pd.Series(trunc[-1]['exit_ts'] if trunc else None)
+    non_edge = lambda rows, edge: [r for r in rows if r['exit_ts'] != edge]
+    assert key(non_edge(full, trunc_last_week.iloc[0])) == key(non_edge(trunc, trunc_last_week.iloc[0]))
+    assert len(full) > 0
+
+
+def test_low_volatility_rotation_handles_staggered_start_dates():
+    """Regression test: a shorter-history symbol (launched after the calendar starts) must never be selected
+    while it lacks enough trailing data — selecting it produced a NaN price and crashed cost calculations."""
+    long_hist = regime_switch_bars(400, 0.001, 400, -0.0005, seed=50)
+    short_hist = long_hist.iloc[500:].copy()  # starts well after the others; reindexing would otherwise NaN-fill it
+    data = {'LONG1': long_hist, 'LONG2': regime_switch_bars(400, 0.0005, 400, 0.0008, seed=51),
+           'LONG3': regime_switch_bars(400, -0.0003, 400, 0.001, seed=52), 'SHORT': short_hist}
+    rows = candidates.low_volatility_rotation(data, {'vol_lookback_months': 6, 'top_n': 5})
+    for r in rows:
+        assert np.isfinite(r['entry_raw']) and np.isfinite(r['exit_raw'])
+        if r['symbol'] == 'SHORT':
+            assert r['entry_ts'] >= short_hist.index[0]
+
+
+def test_low_volatility_rotation_no_lookahead():
+    data = {'A': regime_switch_bars(300, 0.0015, 400, -0.0005, seed=41),
+           'B': regime_switch_bars(300, 0.0003, 400, 0.0020, seed=42),
+           'C': regime_switch_bars(300, -0.0010, 400, 0.0005, seed=43),
+           'D': regime_switch_bars(300, 0.0008, 400, -0.0020, seed=44)}
+    cut = 500
+    cutoff_ts = list(data.values())[0].index[cut - 1]
+    closed = lambda rows: [r for r in rows if r['exit_reason'] != 'data_end' and r['exit_ts'] <= cutoff_ts]
+    full = closed(candidates.low_volatility_rotation(data, {'vol_lookback_months': 6, 'top_n': 2}))
+    trunc = closed(candidates.low_volatility_rotation({s: d.iloc[:cut] for s, d in data.items()}, {'vol_lookback_months': 6, 'top_n': 2}))
+    key = lambda rows: [(r['entry_ts'], r['exit_ts'], r['symbol']) for r in rows]
+    assert key(full) == key(trunc) and len(full) > 0
 
 
 def test_production_strategy_adapter_has_no_lookahead():
@@ -241,6 +304,26 @@ def test_capital_constrained_curve_splits_capital_across_concurrent_positions():
     assert r['total_return_pct'] == pytest.approx(50.0, abs=1e-6)
 
 
+def test_drawdown_duration_measures_peak_to_recovery():
+    cal = pd.date_range('2026-01-01', periods=20, freq='D', tz='UTC')
+    # peak on day0 (100); decline through day4 (90); flat through day13; recovers to a new peak on day19 -> 19 days.
+    close = np.concatenate([np.linspace(100, 90, 5), np.full(10, 90.0), np.linspace(90, 101, 6)[1:]])
+    assert len(close) == 20
+    price = {'A': pd.DataFrame({'close': close}, index=cal)}
+    trades = pd.DataFrame({'entry_ts': [cal[0]], 'exit_ts': [cal[19]], 'symbol': ['A']})
+    r = portfolio.build(trades, price, cal)
+    assert r['max_drawdown_duration_days'] == 19 and not r['max_drawdown_ongoing_at_window_end']
+
+
+def test_drawdown_duration_flagged_ongoing_if_never_recovered():
+    cal = pd.date_range('2026-01-01', periods=10, freq='D', tz='UTC')
+    close = np.linspace(100, 80, 10)  # straight decline, never recovers
+    price = {'A': pd.DataFrame({'close': close}, index=cal)}
+    trades = pd.DataFrame({'entry_ts': [cal[0]], 'exit_ts': [cal[9]], 'symbol': ['A']})
+    r = portfolio.build(trades, price, cal)
+    assert r['max_drawdown_ongoing_at_window_end'] and r['max_drawdown_duration_days'] == 9
+
+
 def test_capital_constrained_curve_flat_when_nothing_open():
     cal = pd.date_range('2026-01-01', periods=5, freq='D', tz='UTC')
     price = {'A': pd.DataFrame({'close': [100.0, 110.0, 90.0, 80.0, 120.0]}, index=cal)}
@@ -249,10 +332,102 @@ def test_capital_constrained_curve_flat_when_nothing_open():
     assert r['total_return_pct'] == pytest.approx(0.0, abs=1e-6) and r['pct_days_invested'] == 0.0
 
 
+def test_trend_regime_classifies_up_and_down():
+    up = pd.Series(np.linspace(100, 200, 400))
+    down = pd.Series(np.linspace(200, 100, 400))
+    assert regime.trend_regime(up).iloc[-1] == 'up'
+    assert regime.trend_regime(down).iloc[-1] == 'down'
+
+
+def test_trend_regime_and_vol_regime_no_lookahead():
+    df = regime_switch_bars(400, 0.002, 400, -0.0015, seed=7)
+    c = df['close']
+    cut = 500
+    tr_full, tr_trunc = regime.trend_regime(c), regime.trend_regime(c.iloc[:cut])
+    assert (tr_full.iloc[:cut] == tr_trunc).all()
+    vol_full, vol_trunc = regime.vol_regime(c), regime.vol_regime(c.iloc[:cut])
+    assert (vol_full.iloc[:cut].astype(object).fillna('x') == vol_trunc.astype(object).fillna('x')).all()
+
+
+def test_vol_regime_buckets_are_roughly_balanced_by_construction():
+    df = regime_switch_bars(300, 0.001, 300, -0.001, seed=8)
+    vr = regime.vol_regime(df['close']).dropna()
+    vr = vr[vr != 'unknown']
+    counts = vr.value_counts(normalize=True)
+    assert len(counts) > 0 and counts.max() < 0.6  # trailing-rank buckets shouldn't collapse to one label
+
+
+def test_label_trades_uses_prior_bar_not_entry_bar():
+    cal = pd.date_range('2026-01-01', periods=300, freq='D', tz='UTC')
+    price = {'X': pd.DataFrame({'close': np.linspace(100, 300, 300), 'open': np.linspace(100, 300, 300),
+                                'high': np.linspace(100, 300, 300) + 1, 'low': np.linspace(100, 300, 300) - 1,
+                                'volume': 1e5}, index=cal)}
+    trades = pd.DataFrame({'entry_ts': [cal[250]], 'exit_ts': [cal[260]], 'symbol': ['X']})
+    out = regime.label_trades(trades, price)
+    assert out.loc[0, 'regime_trend'] == 'up'  # steadily rising series should read as an uptrend
+
+
+def test_rsi2_candidate_meta_is_diagnostic_only_no_signal_change():
+    """Attaching rsi_entry/dist_above_sma200_pct to Signal.meta must not change which bars trigger a trade."""
+    df = bars(900, freq='1D', seed=15, drift=0.0005)
+    p = {'rsi_max': 10, 'stop_pct': 0.10, 'max_hold': 10}
+    sig, rule = candidates.rsi2_mean_reversion(df, p)
+    assert all('rsi_entry' in s.meta and 'dist_above_sma200_pct' in s.meta for s in sig)
+    key = [(s.i, s.stop, s.max_hold) for s in sig]
+    # re-deriving without meta (same core logic) must produce the identical entry set
+    c = df['close']
+    from research.candidates import rsi as rsi_fn
+    r = rsi_fn(c, 2)
+    entry = (c > c.rolling(200).mean()) & (r < p['rsi_max'])
+    expected = [(int(i), float(c.iloc[i]) * (1 - p['stop_pct']), p['max_hold']) for i in np.flatnonzero(entry.to_numpy())]
+    assert key == expected
+
+
 def test_portfolio_candidate_declared_correctly():
     names = {c['name']: c for c in candidates.CANDIDATES}
     assert names['sector_rotation_momentum']['kind'] == 'portfolio'
     assert len(names['sector_rotation_momentum']['universe']) >= 5
+
+
+def test_registry_promotion_uses_adjusted_bar_not_raw_95th():
+    from research.registry import classify
+    adjusted = 0.997  # e.g. ~19 hypotheses
+    # Clears the raw 95th percentile bar in both windows but not the stricter adjusted bar -> must NOT promote.
+    status, rationale = classify('OUT-OF-SAMPLE POSITIVE', {'validation': (1.00, 0.01, 0, 0), 'test': (0.97, 0.01, 0, 0)}, adjusted)
+    assert status == 'RESEARCHING' and 'adjusted' in rationale
+    # Clears the adjusted bar in both windows -> promotes.
+    status, rationale = classify('OUT-OF-SAMPLE POSITIVE', {'validation': (0.999, 0.01, 0, 0), 'test': (0.998, 0.01, 0, 0)}, adjusted)
+    assert status == 'SHADOW_CANDIDATE'
+    # Clears validation but not test -> not a promotion regardless of how good validation looks.
+    status, rationale = classify('OUT-OF-SAMPLE POSITIVE', {'validation': (0.999, 0.01, 0, 0), 'test': (0.80, 0.01, 0, 0)}, adjusted)
+    assert status != 'SHADOW_CANDIDATE'
+
+
+def test_multiple_testing_bonferroni_math():
+    from research import multiple_testing as mt
+    n = mt.total_hypotheses()
+    assert n == len(candidates.CANDIDATES) + 3
+    adj = mt.bonferroni_percentile(n)
+    assert adj > 0.95 and adj < 1.0
+    assert mt.bonferroni_percentile(1) == 0.95  # a single hypothesis reduces to the nominal bar
+    assert mt.bonferroni_percentile(20) > mt.bonferroni_percentile(5)  # more hypotheses -> stricter bar
+
+
+def test_multiple_testing_report_reflects_actual_pass_fail_when_given_rows():
+    from research import multiple_testing as mt
+    promoted = mt.render_report([{'name': 'a', 'status': 'SHADOW_CANDIDATE', 'rationale': 'clears adjusted bar'}])
+    assert 'a' in promoted and 'clear the adjusted' in promoted
+    near_miss = mt.render_report([{'name': 'b', 'status': 'RESEARCHING', 'rationale': 'clears the nominal single-test 95th percentile bar but not adjusted'}])
+    assert 'No candidate clears' in near_miss and 'b' in near_miss
+    standalone = mt.render_report()
+    assert 'Standalone run' in standalone
+
+
+def test_all_candidates_have_hypothesis_and_fixed_params():
+    for c in candidates.CANDIDATES:
+        assert c['hypothesis'] and len(c['hypothesis']) > 20
+        assert isinstance(c['params'], dict) and len(c['params']) > 0
+        assert c['universe']
 
 
 def test_research_never_imports_execution_or_broker():

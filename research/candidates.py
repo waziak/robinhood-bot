@@ -132,13 +132,149 @@ def trend_sma200(df, p):
 
 
 def rsi2_mean_reversion(df, p):
-    """Short-term overreaction inside a long-term uptrend reverts within days (liquidity-provision premium)."""
+    """Short-term overreaction inside a long-term uptrend reverts within days (liquidity-provision premium).
+
+    Signal.meta below is diagnostic metadata ONLY (the RSI value and distance-from-average at entry) — it does
+    not affect which bars trigger an entry, the stop, the exit rule, or the holding period, so attaching it does
+    not alter trade generation or outcomes and does not constitute a new look at any sealed evaluation of this
+    strategy; it exists so research/rsi2_diagnostics.py can explain (not tune) already-sealed results."""
     c = df['close']
     r = rsi(c, 2)
-    entry = (c > c.rolling(200).mean()) & (r < p['rsi_max'])
+    sma200 = c.rolling(200).mean()
+    entry = (c > sma200) & (r < p['rsi_max'])
+    exit_rule = (c > c.rolling(5).mean()).to_numpy()
+    sig = [Signal(int(i), float(c.iloc[i]) * (1 - p['stop_pct']), None, p['max_hold'],
+                 {'rsi_entry': round(float(r.iloc[i]), 2), 'dist_above_sma200_pct': round(100 * (c.iloc[i] / sma200.iloc[i] - 1), 3)})
+           for i in np.flatnonzero(entry.to_numpy())]
+    return sig, exit_rule
+
+
+# ── Phase 4: robustness cross-checks and new hypotheses (see docs/PHASE_4_READINESS.md) ────────────────────
+def rsi2_early_exit(df, p):
+    """Same setup as rsi2_mean_reversion (RSI(2)<10 pullback in a long-term uptrend), but exits on a HARD time-stop
+    at day `hold_days` instead of waiting up to 10 days for a 5-day-SMA reclaim.
+
+    Pre-registered from a pattern visible independently in the TRAIN split of rsi2_mean_reversion (i.e., before
+    ever looking at its validation or test performance): trades held 1-4 days there were strongly and consistently
+    profitable across train/validation/test alike, while trades held 7-10 days were consistently a net loss in
+    every one of those three splits. Hypothesis: the reversion either resolves within a few days or the setup has
+    failed (a stronger, unresolved downtrend or a failed liquidity-provision scenario), so cutting the holding
+    period short should keep the profitable part of the effect and remove the decaying tail — an exit-mechanics
+    change, not a re-tuned entry threshold, and evaluated on its own fresh train/validation/(new)test split."""
+    c = df['close']
+    r = rsi(c, 2)
+    sma200 = c.rolling(200).mean()
+    entry = (c > sma200) & (r < p['rsi_max'])
+    sig = [Signal(int(i), float(c.iloc[i]) * (1 - p['stop_pct']), None, p['hold_days'],
+                 {'rsi_entry': round(float(r.iloc[i]), 2)}) for i in np.flatnonzero(entry.to_numpy())]
+    return sig
+
+
+def pullback_from_high(df, p):
+    """Cross-check of the same broad hypothesis (short-term overreaction inside a long-term uptrend reverts) using
+    a DIFFERENT technical construction — a simple % pullback from the trailing high instead of RSI(2) — to test
+    whether the effect is specific to the RSI formula or a more general short-term-oversold phenomenon."""
+    c = df['close']
+    sma200 = c.rolling(200).mean()
+    trailing_high = c.rolling(p['high_lookback']).max()
+    pullback = c / trailing_high - 1
+    entry = (c > sma200) & (pullback < -p['pullback_pct']) & (c > c.shift(1))  # a down-move that has just turned up
+    sig = [Signal(int(i), float(c.iloc[i]) * (1 - p['stop_pct']), None, p['max_hold'],
+                 {'pullback_pct_at_entry': round(100 * float(pullback.iloc[i]), 2)})
+           for i in np.flatnonzero(entry.to_numpy())]
+    exit_rule = (c > c.rolling(5).mean()).to_numpy()
+    return sig, exit_rule
+
+
+def weekly_rsi2(df, p):
+    """Same reversion hypothesis sampled at WEEKLY resolution instead of daily — a structurally lower-turnover
+    variant, and a check for whether the effect is a short-horizon (daily) microstructure artifact or genuinely
+    present at a coarser, even-lower-intervention timescale."""
+    w = df.resample('W').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+    c = w['close']
+    r = rsi(c, 2)
+    sma = c.rolling(p['sma_weeks']).mean()
+    entry = (c > sma) & (r < p['rsi_max'])
+    idxs = np.flatnonzero(entry.to_numpy())
+    o = w['open'].to_numpy(float)
+    rows = []
+    for k in idxs:
+        if k + 1 >= len(w):
+            continue
+        end = min(len(w) - 1, k + 1 + p['hold_weeks'])
+        entry_ts, exit_ts = w.index[k + 1], w.index[end]
+        # bars_held must be in TRADING-DAY units (the convention every other candidate and research/reality_check's
+        # random-entry null use), not weeks — using week-counts here previously made the null draw ~4-day random
+        # holds against this strategy's real ~4-week holds, a unit mismatch that would fabricate an apparent edge.
+        days_held = int(df.index.searchsorted(exit_ts) - df.index.searchsorted(entry_ts))
+        rows.append({'entry_ts': entry_ts, 'exit_ts': exit_ts, 'entry_raw': o[k + 1],
+                    'exit_raw': o[end] if end < len(w) - 1 else c.iloc[end],
+                    'bars_held': max(1, days_held), 'exit_reason': 'time', 'mfe': 0.0, 'mae': 0.0})
+    return rows
+
+
+def combined_trend_vol_rsi2(df, p):
+    """Combines three INDEPENDENTLY defensible signals rather than adding indicators for their own sake: (1) the
+    existing trend filter (price above its 200-day average), (2) the existing RSI(2) oversold pullback, and (3) a
+    volatility filter requiring the instrument NOT be in its own trailing-high-volatility tercile. Hypothesis:
+    rsi2_mean_reversion's diagnostic breakdown showed its 'high' realized-volatility bucket was flat-to-negative in
+    2 of 3 splits (train -0.04%, test -0.12%) while 'low'/'mid' were consistently positive in all three — excluding
+    the high-volatility tercile should remove a specifically weak slice rather than mine for a better one, since the
+    other two buckets are kept exactly as before, unfiltered."""
+    from research.regime import vol_regime
+    c = df['close']
+    r = rsi(c, 2)
+    sma200 = c.rolling(200).mean()
+    vr = vol_regime(c)
+    entry = (c > sma200) & (r < p['rsi_max']) & (vr != 'high')
     exit_rule = (c > c.rolling(5).mean()).to_numpy()
     sig = [Signal(int(i), float(c.iloc[i]) * (1 - p['stop_pct']), None, p['max_hold'], {}) for i in np.flatnonzero(entry.to_numpy())]
     return sig, exit_rule
+
+
+def low_volatility_rotation(data: dict, p) -> list:
+    """Low-volatility anomaly (Ang, Hodges, Xing & Zhang 2006; Baker, Bradley & Wurgler 2011): lower-volatility
+    assets have historically delivered comparable or better risk-adjusted returns than higher-volatility ones,
+    plausibly because leverage-constrained investors bid up higher-beta assets for a given expected return. Monthly,
+    equal-weight-hold the `top_n` lowest-trailing-realized-volatility instruments in the universe; no absolute
+    filter (always invested, unlike the momentum rotation candidate) since low-vol is a relative-ranking effect."""
+    from research.candidates import month_end_flags
+    calendar = max(data.values(), key=len).index
+    idxs = np.flatnonzero(month_end_flags(pd.DataFrame(index=calendar)))
+    closes = {s: df['close'].reindex(calendar, method='ffill') for s, df in data.items()}
+    opens = {s: df['open'].reindex(calendar, method='ffill') for s, df in data.items()}
+    lb = p['vol_lookback_months'] * 21
+    trades, held, entry_i = [], set(), None
+
+    def vol_of(sym, i):
+        r = closes[sym].iloc[max(0, i - lb):i].pct_change().dropna()
+        return r.std() if len(r) > lb / 2 else np.inf
+
+    def close_out(symbols, exit_i, reason):
+        rows = []
+        for sym in symbols:
+            if entry_i is None or exit_i <= entry_i:
+                continue
+            entry_px, exit_px = opens[sym].iloc[entry_i], opens[sym].iloc[exit_i]
+            path = closes[sym].iloc[entry_i:exit_i + 1]
+            rows.append({'entry_ts': calendar[entry_i], 'exit_ts': calendar[exit_i], 'entry_raw': entry_px,
+                        'exit_raw': exit_px, 'bars_held': exit_i - entry_i, 'exit_reason': reason, 'symbol': sym,
+                        'mfe': path.max() / entry_px - 1, 'mae': path.min() / entry_px - 1})
+        return rows
+
+    month_ks = [k for k in range(len(idxs)) if idxs[k] >= lb and idxs[k] + 1 < len(calendar)]
+    for k in month_ks:
+        i = idxs[k]
+        # A shorter-history symbol (e.g. an ETF that launched after `calendar` starts) has np.inf here and must
+        # never be selected — ranking would otherwise "pick" it with an undefined (NaN) price at that date.
+        vols = {s: v for s, v in ((s, vol_of(s, i)) for s in data) if np.isfinite(v)}
+        target = set(sorted(vols, key=vols.get)[:min(p['top_n'], len(vols))])
+        if target and target != held:
+            trades += close_out(held, i + 1, 'rebalance')
+            held, entry_i = target, i + 1
+    if held:
+        trades += close_out(held, len(calendar) - 1, 'data_end')
+    return trades
 
 
 # ── monthly / cross-sectional (low turnover, "smooth returns" family) ───────
@@ -275,4 +411,26 @@ CANDIDATES = [
                    'performer across a diversified ETF set; go to cash if even the best is negative (avoids the "least-bad '
                    'asset in a crash" trap).',
      'regime': 'all — cash overlay specifically targets crash regimes'},
+
+    # ── Phase 4 ──────────────────────────────────────────────────────────────
+    {'name': 'rsi2_early_exit', 'fn': rsi2_early_exit, 'source': 'yf', 'interval': '1d', 'universe': INDEX_ETFS,
+     'params': {'rsi_max': 10, 'stop_pct': 0.10, 'hold_days': 4},
+     'hypothesis': rsi2_early_exit.__doc__.strip(),
+     'regime': 'long-term uptrend, short-term oversold; hypothesis specifically about EXIT timing'},
+    {'name': 'pullback_from_high', 'fn': pullback_from_high, 'source': 'yf', 'interval': '1d', 'universe': INDEX_ETFS,
+     'kind': 'exit_rule', 'params': {'high_lookback': 10, 'pullback_pct': 0.03, 'stop_pct': 0.10, 'max_hold': 10},
+     'hypothesis': pullback_from_high.__doc__.strip(),
+     'regime': 'long-term uptrend, short-term oversold'},
+    {'name': 'weekly_rsi2', 'fn': weekly_rsi2, 'source': 'yf', 'interval': '1d', 'universe': INDEX_ETFS,
+     'kind': 'trades', 'params': {'rsi_max': 10, 'sma_weeks': 40, 'hold_weeks': 3},
+     'hypothesis': weekly_rsi2.__doc__.strip(),
+     'regime': 'long-term uptrend, short-term oversold, weekly resolution'},
+    {'name': 'combined_trend_vol_rsi2', 'fn': combined_trend_vol_rsi2, 'source': 'yf', 'interval': '1d', 'universe': INDEX_ETFS,
+     'kind': 'exit_rule', 'params': {'rsi_max': 10, 'stop_pct': 0.10, 'max_hold': 10},
+     'hypothesis': combined_trend_vol_rsi2.__doc__.strip(),
+     'regime': 'long-term uptrend, short-term oversold, excluding high-volatility regime'},
+    {'name': 'low_volatility_rotation', 'fn': low_volatility_rotation, 'source': 'yf', 'interval': '1d',
+     'universe': [s for s in ETFS if s != 'SHY'], 'kind': 'portfolio', 'params': {'vol_lookback_months': 6, 'top_n': 5},
+     'hypothesis': low_volatility_rotation.__doc__.strip(),
+     'regime': 'all — a relative-ranking effect, not regime-dependent by construction'},
 ]

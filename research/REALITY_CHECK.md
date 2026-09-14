@@ -1,6 +1,6 @@
 # Reality Check — candidates that passed formal validation
 
-Generated 2026-09-13 20:08 UTC by `python -m research.reality_check`. Targets are auto-detected from `run_candidates` decisions (nothing hand-picked). 3 of 11 candidates reached this stage. Random-entry null: 2000 simulations of long trades on the same symbols with the same holding periods inside the same window, charged the same round-trip costs. A strategy whose mean does not beat that null is earning market drift, not timing.
+Generated 2026-09-14 00:23 UTC by `python -m research.reality_check`. Targets are auto-detected from `run_candidates` decisions (nothing hand-picked). 7 of 16 candidates reached this stage. Random-entry null: 2000 simulations of long trades on the same symbols with the same holding periods inside the same window, charged the same round-trip costs. A strategy whose mean does not beat that null is earning market drift, not timing.
 
 ## trend_sma200
 
@@ -133,4 +133,173 @@ Test window by symbol:
 Test-window consistency: downside deviation 4.419%, Sortino-like nan, longest losing streak 17 trades, 6% of 345 active weeks profitable.
 
 **Reality-check verdict:** Per-trade gains are explained by market drift while exposed; no timing edge beyond random entries. Per exposure-day it earned +0.0564% vs buy-and-hold +0.0399%/day (better than simply holding while invested).
+
+## pullback_from_high
+
+Formal validation-gate decision: **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+Hypothesis: Cross-check of the same broad hypothesis (short-term overreaction inside a long-term uptrend reverts) using
+    a DIFFERENT technical construction — a simple % pullback from the trailing high instead of RSI(2) — to test
+    whether the effect is specific to the RSI formula or a more general short-term-oversold phenomenon.
+Parameters (unchanged): `{'high_lookback': 10, 'pullback_pct': 0.03, 'stop_pct': 0.1, 'max_hold': 10}`
+
+| split | n | mean net %/trade | t-stat | random-entry null mean % | strategy percentile vs null | excess %/trade | avg days held | net %/exposure-day | buy&hold %/day | time in market | 1-bar-delayed entry mean % | mean @3x / @5x costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| train | 253 | +0.371 | 2.72 | +0.069 | 96% | +0.302 | 3.4 | +0.1090 | +0.0238 | 4% | +0.170 | +0.271 / +0.170 |
+| validation | 93 | +0.631 | 4.78 | +0.121 | 100% | +0.510 | 3.2 | +0.1989 | +0.0519 | 4% | +0.153 | +0.530 / +0.430 |
+| test | 113 | +0.152 | 0.70 | +0.168 | 47% | -0.017 | 3.4 | +0.0441 | +0.0529 | 6% | +0.530 | +0.052 / -0.049 |
+
+Test window by year:
+
+| year | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| 2020 | 25.000 | 0.520 | 0.088 | 0.406 | 2.203 |
+| 2021 | 18.000 | 0.778 | 0.560 | 0.853 | 10.084 |
+| 2022 | 4.000 | 0.500 | -1.123 | 0.886 | -4.494 |
+| 2023 | 19.000 | 0.737 | 0.301 | 0.355 | 5.718 |
+| 2024 | 26.000 | 0.654 | 0.353 | 0.227 | 9.180 |
+| 2025 | 12.000 | 0.333 | -0.386 | -0.390 | -4.631 |
+| 2026 | 9.000 | 0.444 | -0.102 | -0.468 | -0.920 |
+
+Test window by symbol:
+
+| symbol | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| DIA | 17.000 | 0.471 | -0.375 | -0.064 | -6.377 |
+| IWM | 36.000 | 0.639 | 0.315 | 0.350 | 11.350 |
+| QQQ | 41.000 | 0.634 | -0.003 | 0.743 | -0.106 |
+| SPY | 19.000 | 0.579 | 0.646 | 0.187 | 12.272 |
+
+Test-window consistency: downside deviation 1.860%, Sortino-like nan, longest losing streak 5 trades, 13% of 340 active weeks profitable.
+
+**Reality-check verdict:** Per-trade gains are explained by market drift while exposed; no timing edge beyond random entries. Per exposure-day it earned +0.0441% vs buy-and-hold +0.0529%/day (worse than simply holding while invested).
+
+## weekly_rsi2
+
+Formal validation-gate decision: **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+Hypothesis: Same reversion hypothesis sampled at WEEKLY resolution instead of daily — a structurally lower-turnover
+    variant, and a check for whether the effect is a short-horizon (daily) microstructure artifact or genuinely
+    present at a coarser, even-lower-intervention timescale.
+Parameters (unchanged): `{'rsi_max': 10, 'sma_weeks': 40, 'hold_weeks': 3}`
+
+| split | n | mean net %/trade | t-stat | random-entry null mean % | strategy percentile vs null | excess %/trade | avg days held | net %/exposure-day | buy&hold %/day | time in market | 1-bar-delayed entry mean % | mean @3x / @5x costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| train | 79 | +1.838 | 3.65 | +0.425 | 99% | +1.412 | 14.4 | +0.1274 | +0.0238 | 6% | +1.838 | +1.738 / +1.635 |
+| validation | 49 | +3.347 | 6.39 | +0.764 | 100% | +2.583 | 14.5 | +0.2310 | +0.0519 | 10% | +3.347 | +3.241 / +3.139 |
+| test | 41 | +2.242 | 2.69 | +0.840 | 97% | +1.402 | 14.4 | +0.1561 | +0.0529 | 9% | +2.242 | +2.140 / +2.038 |
+
+Test window by year:
+
+| year | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| 2020 | 4.000 | 0.750 | 0.959 | 6.132 | 3.835 |
+| 2021 | 7.000 | 0.857 | 3.564 | 3.748 | 24.951 |
+| 2023 | 8.000 | 0.625 | 1.674 | 0.639 | 13.391 |
+| 2024 | 8.000 | 0.875 | 5.482 | 5.484 | 43.856 |
+| 2025 | 4.000 | 0.750 | 3.299 | 3.921 | 13.197 |
+| 2026 | 10.000 | 0.200 | -0.730 | -1.289 | -7.297 |
+
+Test window by symbol:
+
+| symbol | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| DIA | 9.000 | 0.556 | 1.941 | 3.228 | 17.471 |
+| IWM | 11.000 | 0.727 | 2.608 | 2.161 | 28.685 |
+| QQQ | 10.000 | 0.600 | 1.985 | 3.781 | 19.853 |
+| SPY | 11.000 | 0.636 | 2.357 | 2.388 | 25.924 |
+
+Test-window consistency: downside deviation 3.067%, Sortino-like nan, longest losing streak 7 trades, 6% of 317 active weeks profitable.
+
+**Reality-check verdict:** Timing edge beyond random entries at the 95% level. Per exposure-day it earned +0.1561% vs buy-and-hold +0.0529%/day (better than simply holding while invested).
+
+## combined_trend_vol_rsi2
+
+Formal validation-gate decision: **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+Hypothesis: Combines three INDEPENDENTLY defensible signals rather than adding indicators for their own sake: (1) the
+    existing trend filter (price above its 200-day average), (2) the existing RSI(2) oversold pullback, and (3) a
+    volatility filter requiring the instrument NOT be in its own trailing-high-volatility tercile. Hypothesis:
+    rsi2_mean_reversion's diagnostic breakdown showed its 'high' realized-volatility bucket was flat-to-negative in
+    2 of 3 splits (train -0.04%, test -0.12%) while 'low'/'mid' were consistently positive in all three — excluding
+    the high-volatility tercile should remove a specifically weak slice rather than mine for a better one, since the
+    other two buckets are kept exactly as before, unfiltered.
+Parameters (unchanged): `{'rsi_max': 10, 'stop_pct': 0.1, 'max_hold': 10}`
+
+| split | n | mean net %/trade | t-stat | random-entry null mean % | strategy percentile vs null | excess %/trade | avg days held | net %/exposure-day | buy&hold %/day | time in market | 1-bar-delayed entry mean % | mean @3x / @5x costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| train | 350 | +0.464 | 4.34 | +0.095 | 99% | +0.368 | 4.3 | +0.1076 | +0.0238 | 7% | +0.423 | +0.364 / +0.263 |
+| validation | 172 | +0.193 | 1.89 | +0.202 | 46% | -0.009 | 4.6 | +0.0417 | +0.0519 | 12% | +0.049 | +0.092 / -0.007 |
+| test | 186 | +0.519 | 4.19 | +0.209 | 95% | +0.310 | 4.2 | +0.1222 | +0.0529 | 12% | +0.357 | +0.419 / +0.318 |
+
+Test window by year:
+
+| year | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| 2020 | 19.000 | 0.947 | 1.296 | 1.003 | 24.632 |
+| 2021 | 42.000 | 0.762 | 0.617 | 0.736 | 25.930 |
+| 2022 | 5.000 | 0.600 | 0.275 | 0.746 | 1.374 |
+| 2023 | 37.000 | 0.595 | 0.057 | 0.208 | 2.116 |
+| 2024 | 26.000 | 0.731 | 0.511 | 0.576 | 13.292 |
+| 2025 | 27.000 | 0.778 | 0.306 | 0.786 | 8.262 |
+| 2026 | 30.000 | 0.700 | 0.699 | 0.887 | 20.964 |
+
+Test window by symbol:
+
+| symbol | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| DIA | 51.000 | 0.706 | 0.402 | 0.518 | 20.527 |
+| IWM | 46.000 | 0.761 | 0.538 | 0.742 | 24.737 |
+| QQQ | 40.000 | 0.800 | 0.609 | 0.737 | 24.377 |
+| SPY | 49.000 | 0.673 | 0.550 | 0.715 | 26.929 |
+
+Test-window consistency: downside deviation 1.172%, Sortino-like nan, longest losing streak 4 trades, 20% of 346 active weeks profitable.
+
+**Reality-check verdict:** Weak evidence of timing edge beyond random entries (80-95th percentile) — not conclusive. Per exposure-day it earned +0.1222% vs buy-and-hold +0.0529%/day (better than simply holding while invested).
+
+## low_volatility_rotation
+
+Formal validation-gate decision: **PASSED VALIDATION — test set already used earlier (see TEST_SET_LOG.md); not re-evaluated**
+Hypothesis: Low-volatility anomaly (Ang, Hodges, Xing & Zhang 2006; Baker, Bradley & Wurgler 2011): lower-volatility
+    assets have historically delivered comparable or better risk-adjusted returns than higher-volatility ones,
+    plausibly because leverage-constrained investors bid up higher-beta assets for a given expected return. Monthly,
+    equal-weight-hold the `top_n` lowest-trailing-realized-volatility instruments in the universe; no absolute
+    filter (always invested, unlike the momentum rotation candidate) since low-vol is a relative-ranking effect.
+Parameters (unchanged): `{'vol_lookback_months': 6, 'top_n': 5}`
+
+| split | n | mean net %/trade | t-stat | random-entry null mean % | strategy percentile vs null | excess %/trade | avg days held | net %/exposure-day | buy&hold %/day | time in market | 1-bar-delayed entry mean % | mean @3x / @5x costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| train | 318 | +2.046 | 2.92 | +1.788 | 69% | +0.258 | 61.3 | +0.0334 | +0.0258 | 384% | +nan | +1.896 / +1.756 |
+| validation | 215 | +1.509 | 4.58 | +1.457 | 57% | +0.052 | 39.0 | +0.0386 | +0.0418 | 495% | +nan | +1.368 / +1.229 |
+| test | 175 | +1.604 | 2.63 | +1.802 | 34% | -0.198 | 47.4 | +0.0338 | +0.0334 | 492% | +nan | +1.457 / +1.310 |
+
+Test window by year:
+
+| year | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| 2020 | 15.000 | 0.400 | 2.450 | -6.716 | 36.748 |
+| 2021 | 35.000 | 0.714 | 2.080 | 2.139 | 72.783 |
+| 2022 | 30.000 | 0.400 | -0.247 | -1.125 | -7.411 |
+| 2023 | 15.000 | 0.733 | 4.550 | 2.485 | 68.252 |
+| 2024 | 30.000 | 0.567 | 0.999 | 1.125 | 29.958 |
+| 2025 | 40.000 | 0.525 | 0.941 | 0.712 | 37.639 |
+| 2026 | 10.000 | 0.600 | 4.275 | 1.072 | 42.752 |
+
+Test window by symbol:
+
+| symbol | n | win_rate | mean_pct | median_pct | total_pct |
+|---|---|---|---|---|---|
+| DIA | 26.000 | 0.615 | 2.705 | 1.781 | 70.339 |
+| EEM | 1.000 | 1.000 | 2.363 | 2.363 | 2.363 |
+| EFA | 16.000 | 0.438 | 2.215 | -0.920 | 35.437 |
+| GLD | 13.000 | 0.615 | 4.645 | 0.820 | 60.386 |
+| SPY | 18.000 | 0.667 | 1.874 | 2.520 | 33.733 |
+| TLT | 20.000 | 0.550 | -0.802 | 0.471 | -16.044 |
+| VNQ | 6.000 | 0.500 | 0.170 | -1.370 | 1.020 |
+| XLB | 1.000 | 0.000 | -10.518 | -10.518 | -10.518 |
+| XLF | 3.000 | 1.000 | 5.385 | 2.342 | 16.154 |
+| XLP | 34.000 | 0.500 | 1.548 | -0.080 | 52.619 |
+| XLU | 10.000 | 0.400 | -2.399 | -1.803 | -23.995 |
+| XLV | 27.000 | 0.593 | 2.194 | 1.506 | 59.226 |
+
+Test-window consistency: downside deviation 3.837%, Sortino-like nan, longest losing streak 11 trades, 6% of 341 active weeks profitable.
+
+**Reality-check verdict:** Per-trade gains are explained by market drift while exposed; no timing edge beyond random entries. Per exposure-day it earned +0.0338% vs buy-and-hold +0.0334%/day (better than simply holding while invested).
 
